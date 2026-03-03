@@ -1,0 +1,97 @@
+; ═══════════════════════════════════════════════════════════
+; ARIA Example: Bubble Sort  
+; Demonstrates: pointers, memory ops, nested loops, mutation
+; ═══════════════════════════════════════════════════════════
+
+(module "bubble_sort"
+
+  (func $bubble_sort
+    (param $arr (ptr i32))
+    (param $len i32)
+    (effects mem div)
+    (intent "Sort an integer array in-place using bubble sort")
+
+    (local mut $i i32 0)
+    (local mut $j i32 0)
+    (local mut $swapped bool false)
+
+    (loop $outer
+      (if (ge.i32 $i (sub.i32 $len 1))
+        (then (br $outer))
+        (else
+          (set $swapped false)
+          (set $j 0)
+          (loop $inner
+            (if (ge.i32 $j (sub.i32 (sub.i32 $len $i) 1))
+              (then (br $inner))
+              (else
+                (intent "Compare adjacent elements and swap if out of order")
+                (let %curr_ptr (ptr i32) (add.i32 $arr $j))
+                (let %next_ptr (ptr i32) (add.i32 $arr (add.i32 $j 1)))
+                (let %curr i32 (load.i32 %curr_ptr))
+                (let %next i32 (load.i32 %next_ptr))
+                (if (gt.i32 %curr %next)
+                  (then
+                    (store.i32 %curr_ptr %next)
+                    (store.i32 %next_ptr %curr)
+                    (set $swapped true))
+                  (else))
+                (set $j (add.i32 $j 1)))))
+
+          (if (eq.bool $swapped false)
+            (then (br $outer))
+            (else))
+          (set $i (add.i32 $i 1))))))
+
+  (func $print_array
+    (param $arr (ptr i32))
+    (param $len i32)
+    (effects io mem div)
+    (intent "Print all elements of an integer array")
+
+    (print "[")
+    (local mut $i i32 0)
+    (loop $print_loop
+      (if (ge.i32 $i $len)
+        (then (br $print_loop))
+        (else
+          (let %ptr (ptr i32) (add.i32 $arr $i))
+          (let %val i32 (load.i32 %ptr))
+          (if (gt.i32 $i 0)
+            (then (print ", "))
+            (else))
+          (print "%d" %val)
+          (set $i (add.i32 $i 1)))))
+    (print "]\n"))
+
+  (func $main
+    (result i32)
+    (effects io mem div)
+    (intent "Demonstrate bubble sort on a sample array")
+
+    (let %arr (ptr i32) (alloc i32 8))
+
+    ; Initialize array: [64, 34, 25, 12, 22, 11, 90, 1]
+    (store.i32 (add.i32 %arr 0) 64)
+    (store.i32 (add.i32 %arr 1) 34)
+    (store.i32 (add.i32 %arr 2) 25)
+    (store.i32 (add.i32 %arr 3) 12)
+    (store.i32 (add.i32 %arr 4) 22)
+    (store.i32 (add.i32 %arr 5) 11)
+    (store.i32 (add.i32 %arr 6) 90)
+    (store.i32 (add.i32 %arr 7) 1)
+
+    (print "Before sorting: ")
+    (call $print_array %arr 8)
+
+    (call $bubble_sort %arr 8)
+
+    (print "After sorting:  ")
+    (call $print_array %arr 8)
+
+    (free %arr)
+    (return 0))
+
+  (export $main)
+  (export $bubble_sort)
+)

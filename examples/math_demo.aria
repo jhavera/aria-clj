@@ -1,0 +1,136 @@
+; ═══════════════════════════════════════════════════════════
+; ARIA Example: Mathematical Functions
+; Demonstrates: multiple algorithms, pure functions, casting
+; ═══════════════════════════════════════════════════════════
+
+(module "math_demo"
+
+  (func $gcd
+    (param $a i32)
+    (param $b i32)
+    (result i32)
+    (effects pure)
+    (intent "Compute greatest common divisor using Euclidean algorithm")
+
+    (if (eq.i32 $b 0)
+      (then (return $a))
+      (else (return (call $gcd $b (rem.i32 $a $b))))))
+
+  (func $factorial
+    (param $n i32)
+    (result i64)
+    (effects pure)
+    (intent "Compute n! using iterative approach for large values")
+
+    (local mut $result i64 1)
+    (local mut $i i32 1)
+    (loop $fact_loop
+      (if (gt.i32 $i $n)
+        (then (br $fact_loop))
+        (else
+          (set $result (mul.i64 $result (cast i32 i64 $i)))
+          (set $i (add.i32 $i 1)))))
+    (return $result))
+
+  (func $is_prime
+    (param $n i32)
+    (result i32)
+    (effects pure)
+    (intent "Check if n is prime by trial division up to sqrt(n)")
+
+    (if (le.i32 $n 1)
+      (then (return 0))
+      (else))
+    (if (le.i32 $n 3)
+      (then (return 1))
+      (else))
+    (if (eq.i32 (rem.i32 $n 2) 0)
+      (then (return 0))
+      (else))
+
+    (local mut $i i32 3)
+    (loop $prime_loop
+      (if (gt.i32 (mul.i32 $i $i) $n)
+        (then (br $prime_loop))
+        (else
+          (if (eq.i32 (rem.i32 $n $i) 0)
+            (then (return 0))
+            (else))
+          (set $i (add.i32 $i 2)))))
+    (return 1))
+
+  (func $power
+    (param $base i32)
+    (param $exp i32)
+    (result i64)
+    (effects pure)
+    (intent "Compute base^exp using fast exponentiation by squaring")
+
+    (local mut $result i64 1)
+    (local mut $b i64 (cast i32 i64 $base))
+    (local mut $e i32 $exp)
+    (loop $pow_loop
+      (if (le.i32 $e 0)
+        (then (br $pow_loop))
+        (else
+          (if (eq.i32 (rem.i32 $e 2) 1)
+            (then (set $result (mul.i64 $result $b)))
+            (else))
+          (set $b (mul.i64 $b $b))
+          (set $e (div.i32 $e 2)))))
+    (return $result))
+
+  (func $main
+    (result i32)
+    (effects io div)
+    (intent "Demonstrate mathematical functions")
+
+    (print "=== ARIA Math Demo ===\n\n")
+
+    ; GCD
+    (print "GCD:\n")
+    (let %g1 i32 (call $gcd 48 18))
+    (print "  gcd(48, 18) = %d\n" %g1)
+    (let %g2 i32 (call $gcd 100 75))
+    (print "  gcd(100, 75) = %d\n" %g2)
+
+    ; Factorial
+    (print "\nFactorial:\n")
+    (local mut $i i32 0)
+    (loop $fact_print
+      (if (gt.i32 $i 12)
+        (then (br $fact_print))
+        (else
+          (let %f i64 (call $factorial $i))
+          (print "  %d! = %ld\n" $i %f)
+          (set $i (add.i32 $i 1)))))
+
+    ; Primes
+    (print "\nPrimes up to 50:\n  ")
+    (set $i 2)
+    (loop $prime_print
+      (if (gt.i32 $i 50)
+        (then (br $prime_print))
+        (else
+          (let %p i32 (call $is_prime $i))
+          (if (eq.i32 %p 1)
+            (then (print "%d " $i))
+            (else))
+          (set $i (add.i32 $i 1)))))
+    (print "\n")
+
+    ; Power
+    (print "\nPowers:\n")
+    (let %p1 i64 (call $power 2 10))
+    (print "  2^10 = %ld\n" %p1)
+    (let %p2 i64 (call $power 3 7))
+    (print "  3^7  = %ld\n" %p2)
+
+    (return 0))
+
+  (export $main)
+  (export $gcd)
+  (export $factorial)
+  (export $is_prime)
+  (export $power)
+)
