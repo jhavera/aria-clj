@@ -15,7 +15,7 @@
             [clojure.string :as str])
   (:import [java.io File]))
 
-(defn- compile-c!
+(defn compile-c!
   "Compile a C file with gcc and return the output binary path."
   [c-path out-path]
   (let [proc (.start (ProcessBuilder.
@@ -28,7 +28,7 @@
           (println err))))
     (.exitValue proc)))
 
-(defn- run-binary!
+(defn run-binary!
   "Run a compiled binary and print its output."
   [path]
   (let [pb (doto (ProcessBuilder. [path])

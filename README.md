@@ -136,6 +136,26 @@ clojure -M:run examples/bubble_sort.aria --run
 clojure -M:run examples/math_demo.aria --run
 ```
 
+## AI generation
+
+`aria_gen` uses Claude to generate ARIA-IR from natural language prompts. It validates the output through the parser and type checker, retrying with error feedback if needed.
+
+Requires an `ANTHROPIC_API_KEY` environment variable.
+
+```bash
+# Generate ARIA-IR and print it
+clojure -M:gen "print hello world"
+
+# Generate, compile with gcc, and execute
+clojure -M:gen --run "compute fibonacci of 10"
+
+# Generate and emit C
+clojure -M:gen --emit-c "sort a list of integers"
+
+# Options
+clojure -M:gen --model claude-sonnet-4-20250514 --max-retries 5 -o out.aria "my program"
+```
+
 ## Running tests
 
 ```bash
@@ -148,6 +168,8 @@ The compiler is a four-stage pipeline:
 
 ```
 .aria source → Reader → Parser → Checker → Codegen → C99
+
+prompt → Claude API → Reader → Parser → Checker → (retry) → Codegen → C99
 ```
 
 | Stage | File | Role |
@@ -156,8 +178,9 @@ The compiler is a four-stage pipeline:
 | **Parser** | `src/aria/parser.clj` | Validates structure and constructs AST maps (plain maps with `:node/type` keys) |
 | **Checker** | `src/aria/checker.clj` | Verifies types, variable scoping, effect declarations, and mutability constraints |
 | **Codegen** | `src/aria/codegen_c.clj` | Transpiles the AST to portable C99, compilable with gcc or clang |
+| **Generator** | `src/aria/gen.clj` | LLM-powered ARIA-IR generation from natural language (calls Claude API, validates, retries) |
 
-The CLI entry point (`src/aria/main.clj`) orchestrates the pipeline and optionally invokes gcc to produce a native binary.
+The compiler CLI (`src/aria/main.clj`) orchestrates the pipeline and optionally invokes gcc to produce a native binary. The generator CLI (`src/aria/gen.clj`) adds an AI front-end that produces validated ARIA-IR from prompts.
 
 ## License
 

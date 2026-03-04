@@ -15,11 +15,12 @@ to clojure.edn/read plus validation. Immutable data structures mirror SSA semant
 
 The Python source files to port are in the sibling `aria` repo:
 - src/lexer.py → largely replaced by clojure.edn/read
-- src/parser.py → ARIA-specific validation + AST construction  
+- src/parser.py → ARIA-specific validation + AST construction
 - src/ast_nodes.py → Clojure records or maps
 - src/type_checker.py → type + effect verification
 - src/codegen_c.py → ARIA-C transpiler backend
 - ariac.py → CLI entry point
+- aria_gen.py → LLM-powered generator (ported to src/aria/gen.clj)
 
 ## Build tool
 
