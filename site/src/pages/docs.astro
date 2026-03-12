@@ -1,0 +1,171 @@
+---
+import Base from '../layouts/Base.astro';
+---
+<Base title="Documentation - ARIA">
+  <article class="py-16 px-4">
+    <div class="max-w-3xl mx-auto">
+      <h1 class="font-mono text-3xl md:text-4xl font-bold mb-4">Documentation</h1>
+      <p class="text-muted mb-2">ARIA-IR Language Reference</p>
+      <p class="text-xs text-muted mb-12 font-mono">v0.1.0</p>
+
+      <!-- Module -->
+      <section class="mb-12">
+        <h2 class="font-mono text-2xl font-bold mb-4">Module Declaration</h2>
+        <p class="text-text/90 leading-relaxed mb-4">
+          Every ARIA-IR program is a module. The module is the top-level container for functions and exports.
+        </p>
+        <pre><code>(module "name"
+  (func ...)
+  (export ...))</code></pre>
+      </section>
+
+      <!-- Functions -->
+      <section class="mb-12">
+        <h2 class="font-mono text-2xl font-bold mb-4">Functions</h2>
+        <p class="text-text/90 leading-relaxed mb-4">
+          Functions are declared with <code>func</code>. Parameters, return types, effects, and intent are all declared explicitly.
+        </p>
+        <pre><code>(func $name
+  (param $x i32)
+  (param $y i32)
+  (result i32)
+  (effects pure)
+  (intent "Add two integers")
+  (return (add.i32 $x $y)))</code></pre>
+
+        <div class="mt-6 space-y-3 text-sm">
+          <div class="bg-surface border border-border rounded-lg p-4">
+            <code class="text-accent">$name</code>
+            <span class="text-muted ml-2">Mutable binding / function name. Prefixed with <code>$</code>.</span>
+          </div>
+          <div class="bg-surface border border-border rounded-lg p-4">
+            <code class="text-accent">%name</code>
+            <span class="text-muted ml-2">Immutable binding (SSA). Prefixed with <code>%</code>. Cannot be reassigned.</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Type System -->
+      <section class="mb-12">
+        <h2 class="font-mono text-2xl font-bold mb-4">Type System</h2>
+        <p class="text-text/90 leading-relaxed mb-4">
+          ARIA-IR uses explicit, type-suffixed operations. There is no implicit coercion.
+        </p>
+        <div class="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+          {['i32', 'i64', 'f32', 'f64', 'bool', 'str', 'void'].map(t => (
+            <div class="bg-surface border border-border rounded-lg px-4 py-2 font-mono text-center">
+              <span class="text-accent">{t}</span>
+            </div>
+          ))}
+        </div>
+        <p class="text-muted text-sm mt-4">
+          Operations carry their type: <code>add.i32</code>, <code>mul.f64</code>, <code>lt.i32</code>, <code>concat.str</code>.
+        </p>
+      </section>
+
+      <!-- Effect System -->
+      <section class="mb-12">
+        <h2 class="font-mono text-2xl font-bold mb-4">Effect System</h2>
+        <p class="text-text/90 leading-relaxed mb-4">
+          Every function declares its effects. The type checker verifies these declarations at compile time.
+        </p>
+        <div class="space-y-3 text-sm">
+          <div class="bg-surface border border-border rounded-lg p-4 flex items-start gap-4">
+            <code class="text-[#7ee787] font-bold flex-shrink-0">pure</code>
+            <span class="text-muted">No side effects. Can be memoized, reordered, or eliminated.</span>
+          </div>
+          <div class="bg-surface border border-border rounded-lg p-4 flex items-start gap-4">
+            <code class="text-[#ffa657] font-bold flex-shrink-0">mem</code>
+            <span class="text-muted">Memory effects. Reads or writes mutable state.</span>
+          </div>
+          <div class="bg-surface border border-border rounded-lg p-4 flex items-start gap-4">
+            <code class="text-[#ff7b72] font-bold flex-shrink-0">io</code>
+            <span class="text-muted">I/O effects. Interacts with the outside world (print, file, network).</span>
+          </div>
+          <div class="bg-surface border border-border rounded-lg p-4 flex items-start gap-4">
+            <code class="text-[#d2a8ff] font-bold flex-shrink-0">div</code>
+            <span class="text-muted">Divergence. May not terminate (loops, recursion).</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Intent Annotations -->
+      <section class="mb-12">
+        <h2 class="font-mono text-2xl font-bold mb-4">Intent Annotations</h2>
+        <p class="text-text/90 leading-relaxed mb-4">
+          The <code>intent</code> node carries the AI's stated purpose for a function. It is preserved through compilation and available for verification in Layer 4.
+        </p>
+        <pre><code>(intent "Compute the nth Fibonacci number using recursion")</code></pre>
+        <p class="text-muted text-sm mt-4">
+          Intent annotations are not comments. They are first-class nodes in the AST. They travel with the code through the pipeline.
+        </p>
+      </section>
+
+      <!-- Control Flow -->
+      <section class="mb-12">
+        <h2 class="font-mono text-2xl font-bold mb-4">Control Flow</h2>
+        <div class="space-y-4">
+          <div>
+            <h3 class="font-mono font-semibold mb-2">Conditionals</h3>
+            <pre><code>(if (lt.i32 $x 10)
+  (then (return $x))
+  (else (return (sub.i32 $x 1))))</code></pre>
+          </div>
+          <div>
+            <h3 class="font-mono font-semibold mb-2">Loops</h3>
+            <pre><code>(loop $label
+  (if (ge.i32 $i $n)
+    (then (br $label))
+    (else
+      ;; loop body
+      (set $i (add.i32 $i 1)))))</code></pre>
+            <p class="text-muted text-sm mt-2"><code>br</code> breaks out of the named loop.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Bindings -->
+      <section class="mb-12">
+        <h2 class="font-mono text-2xl font-bold mb-4">Bindings</h2>
+        <pre><code><span class="text-muted">;; Immutable (SSA)</span>
+(let %result i32 (add.i32 $x $y))
+
+<span class="text-muted">;; Mutable local</span>
+(local mut $counter i32 0)
+(set $counter (add.i32 $counter 1))</code></pre>
+      </section>
+
+      <!-- Exports -->
+      <section class="mb-12">
+        <h2 class="font-mono text-2xl font-bold mb-4">Exports</h2>
+        <p class="text-text/90 leading-relaxed mb-4">
+          Functions must be explicitly exported to be visible outside the module. The <code>$main</code> export is the entry point.
+        </p>
+        <pre><code>(export $main)
+(export $fibonacci)</code></pre>
+      </section>
+
+      <!-- Examples -->
+      <section>
+        <h2 class="font-mono text-2xl font-bold mb-4">Example Programs</h2>
+        <p class="text-muted mb-4 text-sm">
+          The <a href="https://github.com/jhavera/aria-clj/tree/main/examples" target="_blank" rel="noopener" class="text-accent hover:underline">examples/</a> directory contains complete programs:
+        </p>
+        <div class="space-y-3 text-sm">
+          <div class="bg-surface border border-border rounded-lg p-4">
+            <code class="text-accent">fibonacci.aria</code>
+            <span class="text-muted ml-2">Recursive and iterative Fibonacci. Demonstrates recursion, loops, intent.</span>
+          </div>
+          <div class="bg-surface border border-border rounded-lg p-4">
+            <code class="text-accent">bubble_sort.aria</code>
+            <span class="text-muted ml-2">Array sorting. Demonstrates mutable state, nested loops, memory effects.</span>
+          </div>
+          <div class="bg-surface border border-border rounded-lg p-4">
+            <code class="text-accent">math_demo.aria</code>
+            <span class="text-muted ml-2">Arithmetic operations. Demonstrates type-suffixed ops, pure functions.</span>
+          </div>
+        </div>
+      </section>
+    </div>
+  </article>
+</Base>

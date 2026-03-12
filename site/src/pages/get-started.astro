@@ -1,0 +1,148 @@
+---
+import Base from '../layouts/Base.astro';
+---
+<Base title="Get Started - ARIA">
+  <article class="py-16 px-4">
+    <div class="max-w-3xl mx-auto">
+      <h1 class="font-mono text-3xl md:text-4xl font-bold mb-4">Get Started</h1>
+      <p class="text-muted mb-12">From zero to compiled ARIA-IR in under ten minutes.</p>
+
+      <!-- Prerequisites -->
+      <section class="mb-12">
+        <h2 class="font-mono text-xl font-bold mb-4">Prerequisites</h2>
+        <div class="bg-surface border border-border rounded-lg p-5 font-mono text-sm space-y-2">
+          <div class="flex justify-between items-center">
+            <span>Java 11+</span>
+            <span class="text-muted">the JVM runtime</span>
+          </div>
+          <div class="flex justify-between items-center">
+            <span>Clojure CLI</span>
+            <span class="text-muted">
+              <a href="https://clojure.org/guides/install_clojure" target="_blank" rel="noopener" class="text-accent hover:underline">install guide</a>
+            </span>
+          </div>
+          <div class="flex justify-between items-center">
+            <span>Git</span>
+            <span class="text-muted">for cloning the repo</span>
+          </div>
+          <div class="flex justify-between items-center">
+            <span>gcc</span>
+            <span class="text-muted">for the C backend (compile + run)</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Install tabs -->
+      <section class="mb-12">
+        <h2 class="font-mono text-xl font-bold mb-4">Install</h2>
+
+        <!-- Tab buttons -->
+        <div class="flex border-b border-border mb-0">
+          <button data-tab="source" class="tab-btn px-4 py-2 text-sm font-medium border-b-2 border-transparent text-muted hover:text-text transition-colors" >Source</button>
+          <button data-tab="uberjar" class="tab-btn px-4 py-2 text-sm font-medium border-b-2 border-accent text-accent">Uberjar</button>
+          <button data-tab="native" class="tab-btn px-4 py-2 text-sm font-medium border-b-2 border-transparent text-muted/50 cursor-not-allowed">Native Binary <span class="text-xs ml-1 opacity-60">v0.2</span></button>
+        </div>
+
+        <!-- Source tab -->
+        <div id="tab-source" class="tab-panel hidden pt-6 space-y-4">
+          <p class="text-muted text-sm">Run directly with the Clojure CLI. No build step required.</p>
+          <pre><code>git clone https://github.com/jhavera/aria-clj.git
+cd aria-clj</code></pre>
+          <pre><code><span class="text-muted"># Type-check an ARIA-IR file</span>
+clj -M:run examples/fibonacci.aria --check
+
+<span class="text-muted"># Emit C to stdout</span>
+clj -M:run examples/fibonacci.aria --emit-c
+
+<span class="text-muted"># Full pipeline: parse, check, compile, execute</span>
+clj -M:run examples/fibonacci.aria --run</code></pre>
+        </div>
+
+        <!-- Uberjar tab (default) -->
+        <div id="tab-uberjar" class="tab-panel pt-6 space-y-4">
+          <p class="text-muted text-sm">Download a prebuilt JAR. Requires Java 11+ but not the Clojure CLI.</p>
+          <pre><code><span class="text-muted"># Download the latest release</span>
+curl -LO https://github.com/jhavera/aria-clj/releases/latest/download/aria-clj.jar</code></pre>
+          <pre><code><span class="text-muted"># Type-check an ARIA-IR file</span>
+java -jar aria-clj.jar examples/fibonacci.aria --check
+
+<span class="text-muted"># Emit C to stdout</span>
+java -jar aria-clj.jar examples/fibonacci.aria --emit-c
+
+<span class="text-muted"># Full pipeline: parse, check, compile, execute</span>
+java -jar aria-clj.jar examples/fibonacci.aria --run</code></pre>
+          <p class="text-xs text-muted">Or build the uberjar yourself: <code>clj -T:build uber</code></p>
+        </div>
+
+        <!-- Native tab (disabled) -->
+        <div id="tab-native" class="tab-panel hidden pt-6">
+          <div class="bg-surface border border-border rounded-lg p-8 text-center">
+            <p class="text-muted">GraalVM native binaries are planned for v0.2.</p>
+            <p class="text-muted text-sm mt-2">This will provide sub-100ms startup with zero dependencies.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Hello World -->
+      <section class="mb-12">
+        <h2 class="font-mono text-xl font-bold mb-4">Hello World</h2>
+        <p class="text-muted mb-4">Create a file called <code>hello.aria</code>:</p>
+        <pre><code><span class="text-muted">(</span><span class="text-[#ff7b72]">module</span> <span class="text-[#a5d6ff]">"hello"</span>
+
+  <span class="text-muted">(</span><span class="text-[#ff7b72]">func</span> <span class="text-accent">$main</span>
+    <span class="text-muted">(</span><span class="text-[#d2a8ff]">result</span> <span class="text-[#79c0ff]">i32</span><span class="text-muted">)</span>
+    <span class="text-muted">(</span><span class="text-[#d2a8ff]">effects</span> <span class="text-[#7ee787]">io</span><span class="text-muted">)</span>
+    <span class="text-muted">(</span><span class="text-[#d2a8ff]">intent</span> <span class="text-[#a5d6ff]">"Print hello world"</span><span class="text-muted">)</span>
+    <span class="text-muted">(</span><span class="text-[#79c0ff]">print</span> <span class="text-[#a5d6ff]">"Hello, world!\n"</span><span class="text-muted">)</span>
+    <span class="text-muted">(</span><span class="text-[#ff7b72]">return</span> <span class="text-[#79c0ff]">0</span><span class="text-muted">))</span>
+
+  <span class="text-muted">(</span><span class="text-[#d2a8ff]">export</span> <span class="text-accent">$main</span><span class="text-muted">))</span></code></pre>
+
+        <p class="text-muted my-4">Compile and run:</p>
+        <pre><code>$ clj -M:run hello.aria --run
+Hello, world!</code></pre>
+      </section>
+
+      <!-- Troubleshooting -->
+      <section>
+        <h2 class="font-mono text-xl font-bold mb-4">Troubleshooting</h2>
+        <div class="space-y-4 text-sm">
+          <div class="bg-surface border border-border rounded-lg p-4">
+            <p class="font-mono font-semibold mb-1">gcc not found</p>
+            <p class="text-muted">The <code>--run</code> and <code>--emit-c</code> flags require gcc. On macOS, install Xcode Command Line Tools: <code>xcode-select --install</code>. On Linux: <code>apt install gcc</code> or equivalent.</p>
+          </div>
+          <div class="bg-surface border border-border rounded-lg p-4">
+            <p class="font-mono font-semibold mb-1">Clojure CLI not found</p>
+            <p class="text-muted">Follow the <a href="https://clojure.org/guides/install_clojure" target="_blank" rel="noopener" class="text-accent hover:underline">official install guide</a>. On macOS: <code>brew install clojure/tools/clojure</code>.</p>
+          </div>
+          <div class="bg-surface border border-border rounded-lg p-4">
+            <p class="font-mono font-semibold mb-1">Something else?</p>
+            <p class="text-muted">Open an issue on <a href="https://github.com/jhavera/aria-clj/issues" target="_blank" rel="noopener" class="text-accent hover:underline">GitHub</a> or ask in <a href="https://github.com/jhavera/aria-clj/discussions" target="_blank" rel="noopener" class="text-accent hover:underline">Discussions</a>.</p>
+          </div>
+        </div>
+      </section>
+    </div>
+  </article>
+
+  <script>
+    const tabs = document.querySelectorAll('.tab-btn');
+    const panels = document.querySelectorAll('.tab-panel');
+
+    tabs.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const target = btn.getAttribute('data-tab');
+        if (target === 'native') return; // disabled
+
+        tabs.forEach(t => {
+          t.classList.remove('border-accent', 'text-accent');
+          t.classList.add('border-transparent', 'text-muted');
+        });
+        btn.classList.remove('border-transparent', 'text-muted');
+        btn.classList.add('border-accent', 'text-accent');
+
+        panels.forEach(p => p.classList.add('hidden'));
+        document.getElementById(`tab-${target}`)?.classList.remove('hidden');
+      });
+    });
+  </script>
+</Base>

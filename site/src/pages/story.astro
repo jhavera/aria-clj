@@ -1,0 +1,88 @@
+---
+import Base from '../layouts/Base.astro';
+---
+<Base title="The Story - ARIA">
+  <article class="py-16 px-4">
+    <div class="max-w-3xl mx-auto">
+      <h1 class="font-mono text-3xl md:text-4xl font-bold mb-4">The Story</h1>
+      <p class="text-muted mb-12">How a question held for twenty years became a compiler.</p>
+
+      <div class="prose-custom space-y-6 text-text/90 leading-relaxed">
+        <p>
+          Baghdad, 2006. I had just returned from a deployment. I bought a book on LISP. I did not know why. Something about the way the parentheses nested felt like the way my thoughts nested. Structure reflecting structure.
+        </p>
+
+        <p>
+          I read about AI. Not the deep learning that would arrive a decade later, but the older kind. Symbolic reasoning. Programs that could write programs. I wrote two blog posts on a free Blogger account in June 2006. The first was about starting over. The second was about a programming language idea. The timestamps are still there.
+        </p>
+
+        <p>
+          The idea was simple: if machines are going to write code, and machines are going to read code, the language in the middle should be designed for machines on both ends. Not for a human staring at a screen. Not for readability. For precision. For composability. For verification.
+        </p>
+
+        <p>
+          I did not have the tools to build it. Not yet.
+        </p>
+
+        <p>
+          The career that followed gave me the tools. IBM, where I learned what enterprise systems actually look like at scale. Air Combat Command Federal Laboratory, where I learned what happens when software fails in systems that cannot fail. FinTech, where I learned that moving fast means nothing if the foundation cracks. Chief Architect at Booz Allen Hamilton, where I built the AVERA architecture and contributed to the first AI-controlled military flight on the U-2 program.
+        </p>
+
+        <p>
+          Each stop taught me the same lesson from a different angle: the gap between what AI can do and what production systems need is not a technology gap. It is a representation gap. The AI speaks in one language. The machine consumes another. And the human in the middle, translating, is the bottleneck that everyone pretends does not exist.
+        </p>
+
+        <p>
+          As CTO of xOrbita, building AI-powered space domain awareness, I see the same pattern every day. AI generates code. Engineers review code. Compilers compile code. Three different audiences, one artifact. The artifact is optimized for the middle audience. The one who is increasingly absent from the loop.
+        </p>
+
+        <p>
+          The question that would not go away: if AI writes the code, and a compiler reads it, why is the intermediate layer still designed for humans who are not present?
+        </p>
+
+        <h2 class="font-mono text-2xl font-bold mt-12 mb-6 text-accent">ARIA</h2>
+
+        <p>
+          ARIA is the answer. AI Representation for Instruction Architecture. An s-expression intermediate representation designed from first principles for the AI-author, compiler-consumer pipeline. No syntax sugar. No ergonomic abstractions. No concessions to readability. Every decision optimized for the two parties actually in the room.
+        </p>
+
+        <p>
+          The Python prototype proved the concept. The Clojure implementation is the real thing.
+        </p>
+
+        <h2 class="font-mono text-2xl font-bold mt-12 mb-6 text-accent">Why Clojure</h2>
+
+        <p>
+          ARIA-IR is s-expressions. Clojure is s-expressions. A Lisp compiler for a Lisp IR. The parser collapses to a reader call plus validation. The toolchain and the representation share structural DNA. This is not clever. It is inevitable.
+        </p>
+
+        <p>
+          This project is not a thesis exercise. It is the answer to a question I have been holding for twenty years.
+        </p>
+
+        <p class="text-xl font-medium mt-12">
+          If you believe this too, <a href="/contributing" class="text-accent hover:underline">contribute</a>.
+        </p>
+      </div>
+
+      <!-- Sidebar: Evidence -->
+      <aside class="mt-16 pt-8 border-t border-border">
+        <h3 class="font-mono text-sm font-semibold text-muted uppercase tracking-wider mb-4">Primary Sources</h3>
+        <div class="space-y-3 text-sm">
+          <div>
+            <a href="https://johnavera.blogspot.com/2006/06/start-of-new-life.html" target="_blank" rel="noopener" class="text-accent hover:underline">Start of a New Life</a>
+            <span class="text-muted"> &mdash; June 2006, johnavera.blogspot.com</span>
+          </div>
+          <div>
+            <a href="https://johnavera.blogspot.com/2006/06/newold-prgramming-language.html" target="_blank" rel="noopener" class="text-accent hover:underline">New/Old Programming Language</a>
+            <span class="text-muted"> &mdash; June 2006, johnavera.blogspot.com</span>
+          </div>
+          <div>
+            <a href="https://medium.com/@jhavera/from-baghdad-to-s-expressions-why-i-built-an-ai-language-that-humans-were-never-meant-to-read-6c0c992cb48b" target="_blank" rel="noopener" class="text-accent hover:underline">From Baghdad to S-Expressions</a>
+            <span class="text-muted"> &mdash; Medium, extended reading</span>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </article>
+</Base>

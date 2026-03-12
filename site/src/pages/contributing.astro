@@ -1,0 +1,158 @@
+---
+import Base from '../layouts/Base.astro';
+---
+<Base title="Contributing - ARIA">
+  <article class="py-16 px-4">
+    <div class="max-w-3xl mx-auto">
+      <h1 class="font-mono text-3xl md:text-4xl font-bold mb-4">Contributing</h1>
+      <p class="text-muted mb-12">An open research project. Shape the future of AI-optimized intermediate representations.</p>
+
+      <!-- Philosophy -->
+      <section class="mb-12">
+        <h2 class="font-mono text-2xl font-bold mb-4">Philosophy</h2>
+        <p class="text-text/90 leading-relaxed">
+          ARIA is an open research project. The thesis is the north star: AI-optimized IRs are the right abstraction for AI-authored code. Contributions that advance this core argument are prioritized. We value correctness over speed, clarity over cleverness, and working code over plans.
+        </p>
+      </section>
+
+      <!-- Roadmap -->
+      <section class="mb-12">
+        <h2 class="font-mono text-2xl font-bold mb-4">Roadmap</h2>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b border-border">
+                <th class="text-left py-3 pr-4 font-mono font-semibold">Component</th>
+                <th class="text-left py-3 pr-4 font-mono font-semibold">Status</th>
+                <th class="text-left py-3 font-mono font-semibold">Notes</th>
+              </tr>
+            </thead>
+            <tbody class="text-muted">
+              <tr class="border-b border-border/50">
+                <td class="py-3 pr-4">Reader / Parser</td>
+                <td class="py-3 pr-4"><span class="text-[#7ee787] font-mono">complete</span></td>
+                <td class="py-3">EDN-based reader with $/%  preprocessing</td>
+              </tr>
+              <tr class="border-b border-border/50">
+                <td class="py-3 pr-4">Type Checker</td>
+                <td class="py-3 pr-4"><span class="text-[#7ee787] font-mono">complete</span></td>
+                <td class="py-3">Type + effect verification</td>
+              </tr>
+              <tr class="border-b border-border/50">
+                <td class="py-3 pr-4">C Codegen (ARIA-C)</td>
+                <td class="py-3 pr-4"><span class="text-[#7ee787] font-mono">complete</span></td>
+                <td class="py-3">C99 output, gcc compilation</td>
+              </tr>
+              <tr class="border-b border-border/50">
+                <td class="py-3 pr-4">LLM Generator</td>
+                <td class="py-3 pr-4"><span class="text-[#7ee787] font-mono">complete</span></td>
+                <td class="py-3">Natural language to ARIA-IR via Claude</td>
+              </tr>
+              <tr class="border-b border-border/50">
+                <td class="py-3 pr-4">JVM Bytecode Backend</td>
+                <td class="py-3 pr-4"><span class="text-[#ffa657] font-mono">planned</span></td>
+                <td class="py-3">ARIA-JVM: compile to .class files</td>
+              </tr>
+              <tr class="border-b border-border/50">
+                <td class="py-3 pr-4">WASM Backend</td>
+                <td class="py-3 pr-4"><span class="text-[#ffa657] font-mono">planned</span></td>
+                <td class="py-3">ARIA-WASM: browser + edge targets</td>
+              </tr>
+              <tr class="border-b border-border/50">
+                <td class="py-3 pr-4">Intent Verification</td>
+                <td class="py-3 pr-4"><span class="text-[#ffa657] font-mono">planned</span></td>
+                <td class="py-3">Layer 4: verify code matches intent</td>
+              </tr>
+              <tr class="border-b border-border/50">
+                <td class="py-3 pr-4">Standard Library</td>
+                <td class="py-3 pr-4"><span class="text-[#ffa657] font-mono">planned</span></td>
+                <td class="py-3">Built-in primitives beyond arithmetic</td>
+              </tr>
+              <tr>
+                <td class="py-3 pr-4">Language Spec v1.0</td>
+                <td class="py-3 pr-4"><span class="text-muted font-mono">future</span></td>
+                <td class="py-3">Formal specification document</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- How to Contribute -->
+      <section class="mb-12">
+        <h2 class="font-mono text-2xl font-bold mb-4">How to Contribute</h2>
+        <div class="space-y-6 text-text/90 leading-relaxed">
+          <div>
+            <h3 class="font-mono font-semibold mb-2">1. Fork and branch</h3>
+            <pre><code>git clone https://github.com/YOUR_USERNAME/aria-clj.git
+cd aria-clj
+git checkout -b your-feature</code></pre>
+          </div>
+          <div>
+            <h3 class="font-mono font-semibold mb-2">2. Run the tests</h3>
+            <pre><code>clj -M:test</code></pre>
+            <p class="text-muted text-sm mt-2">All PRs must pass existing tests. New features should include tests.</p>
+          </div>
+          <div>
+            <h3 class="font-mono font-semibold mb-2">3. Submit a PR</h3>
+            <p class="text-muted">
+              Open a pull request against <code>main</code>. Describe what you changed and why. Link to a related issue if one exists.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Conventions -->
+      <section class="mb-12">
+        <h2 class="font-mono text-2xl font-bold mb-4">Conventions</h2>
+        <div class="space-y-3 text-sm">
+          <div class="bg-surface border border-border rounded-lg p-4">
+            <span class="text-text font-medium">Idiomatic Clojure.</span>
+            <span class="text-muted ml-1">Prefer pure functions, immutable data, threading macros.</span>
+          </div>
+          <div class="bg-surface border border-border rounded-lg p-4">
+            <span class="text-text font-medium">Function-level docstrings.</span>
+            <span class="text-muted ml-1">Public functions should have docstrings.</span>
+          </div>
+          <div class="bg-surface border border-border rounded-lg p-4">
+            <span class="text-text font-medium">Test coverage expected.</span>
+            <span class="text-muted ml-1">New features need tests. Bug fixes need regression tests.</span>
+          </div>
+          <div class="bg-surface border border-border rounded-lg p-4">
+            <span class="text-text font-medium">No Leiningen.</span>
+            <span class="text-muted ml-1">This project uses deps.edn exclusively.</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Good First Issues -->
+      <section class="mb-12">
+        <h2 class="font-mono text-2xl font-bold mb-4">Good First Issues</h2>
+        <p class="text-muted mb-4">
+          Look for issues labeled <code>good first issue</code> on
+          <a href="https://github.com/jhavera/aria-clj/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22" target="_blank" rel="noopener" class="text-accent hover:underline">GitHub</a>.
+        </p>
+        <p class="text-muted text-sm">
+          If no labeled issues exist yet, pick something from the roadmap and open a discussion first.
+        </p>
+      </section>
+
+      <!-- Discuss -->
+      <section>
+        <h2 class="font-mono text-2xl font-bold mb-4">Where to Discuss</h2>
+        <div class="flex flex-col sm:flex-row gap-4">
+          <a href="https://github.com/jhavera/aria-clj/issues" target="_blank" rel="noopener"
+             class="flex-1 bg-surface border border-border rounded-lg p-4 hover:border-accent transition-colors text-center">
+            <span class="font-mono font-semibold">Issues</span>
+            <p class="text-muted text-sm mt-1">Bug reports, feature requests</p>
+          </a>
+          <a href="https://github.com/jhavera/aria-clj/discussions" target="_blank" rel="noopener"
+             class="flex-1 bg-surface border border-border rounded-lg p-4 hover:border-accent transition-colors text-center">
+            <span class="font-mono font-semibold">Discussions</span>
+            <p class="text-muted text-sm mt-1">Questions, ideas, architecture</p>
+          </a>
+        </div>
+      </section>
+    </div>
+  </article>
+</Base>

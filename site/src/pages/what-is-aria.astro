@@ -1,0 +1,114 @@
+---
+import Base from '../layouts/Base.astro';
+import Pipeline from '../components/Pipeline.astro';
+---
+<Base title="What is ARIA - Technical Overview">
+  <article class="py-16 px-4">
+    <div class="max-w-3xl mx-auto">
+      <h1 class="font-mono text-3xl md:text-4xl font-bold mb-4">What is ARIA</h1>
+      <p class="text-muted mb-12">An AI-optimized intermediate representation for the prompt-to-binary pipeline.</p>
+
+      <!-- The Problem -->
+      <section class="mb-16">
+        <h2 class="font-mono text-2xl font-bold mb-6">The Problem</h2>
+        <div class="space-y-4 text-text/90 leading-relaxed">
+          <p>
+            AI generates Python. A compiler compiles Python. No human reads the Python. So why is the Python there?
+          </p>
+          <p>
+            Today's AI code generation pipeline produces code in languages designed for human ergonomics. Tab completion. Readable variable names. Syntactic sugar. These features exist for an audience that is increasingly absent from the pipeline: the human author.
+          </p>
+        </div>
+      </section>
+
+      <!-- The Insight -->
+      <section class="mb-16">
+        <h2 class="font-mono text-2xl font-bold mb-6">The Insight</h2>
+        <div class="space-y-4 text-text/90 leading-relaxed">
+          <p>
+            The Goldilocks zone between natural language (too ambiguous for compilers) and machine code (too low-level for AI) is an AI-optimized intermediate representation.
+          </p>
+          <p>
+            Not LLVM IR. That was designed for compiling human languages. Something designed from first principles for the AI-author, compiler-consumer pipeline. A representation where the AI can express intent, the compiler can verify correctness, and no one pretends a human needs to read it.
+          </p>
+        </div>
+      </section>
+
+      <!-- Design Principles -->
+      <section class="mb-16">
+        <h2 class="font-mono text-2xl font-bold mb-6">ARIA-IR Design Principles</h2>
+        <div class="space-y-4">
+          <div class="bg-surface border border-border rounded-lg p-5">
+            <h3 class="font-mono font-semibold text-accent mb-2">S-expression syntax</h3>
+            <p class="text-muted text-sm">Zero ambiguity, no precedence rules. Every structure is explicitly delimited. The syntax is the AST.</p>
+          </div>
+          <div class="bg-surface border border-border rounded-lg p-5">
+            <h3 class="font-mono font-semibold text-accent mb-2">Type-suffixed operations</h3>
+            <p class="text-muted text-sm"><code>add.i32</code>, <code>mul.f64</code>. No implicit coercion. Every operation declares its types.</p>
+          </div>
+          <div class="bg-surface border border-border rounded-lg p-5">
+            <h3 class="font-mono font-semibold text-accent mb-2">First-class intent annotations</h3>
+            <p class="text-muted text-sm"><code>(intent "...")</code> nodes let the AI state <em>why</em>, not just <em>what</em>. Preserved through compilation for verification.</p>
+          </div>
+          <div class="bg-surface border border-border rounded-lg p-5">
+            <h3 class="font-mono font-semibold text-accent mb-2">Effect declarations</h3>
+            <p class="text-muted text-sm"><code>pure</code>, <code>mem</code>, <code>io</code>, <code>div</code>. Verified at compile time. A pure function cannot perform I/O. The type checker enforces this.</p>
+          </div>
+          <div class="bg-surface border border-border rounded-lg p-5">
+            <h3 class="font-mono font-semibold text-accent mb-2">SSA form</h3>
+            <p class="text-muted text-sm"><code>%immutable</code> bindings, <code>$mutable</code> locals with explicit <code>set</code>. No hidden reassignment. Every data flow is visible.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Pipeline -->
+      <section class="mb-16">
+        <h2 class="font-mono text-2xl font-bold mb-6">The Pipeline</h2>
+        <div class="bg-surface border border-border rounded-xl p-6 mb-8">
+          <Pipeline />
+        </div>
+        <div class="bg-code-bg border border-border rounded-lg p-6 font-mono text-sm leading-loose">
+          <div class="text-muted">Natural Language Prompt</div>
+          <div class="text-muted ml-8">&darr;</div>
+          <div class="ml-4"><span class="text-text">AI Model</span> <span class="text-muted">(Layer 1)</span></div>
+          <div class="text-muted ml-8">&darr;</div>
+          <div class="ml-4 text-accent">ARIA-IR</div>
+          <div class="text-muted ml-8">&darr;</div>
+          <div class="ml-4"><span class="text-text">aria-clj Toolchain</span> <span class="text-muted">(Layer 2)</span></div>
+          <div class="ml-8 text-muted">read &rarr; parse &rarr; type-check &rarr; codegen</div>
+          <div class="text-muted ml-8">&darr;</div>
+          <div class="ml-4"><span class="text-text">Compiler Backend</span> <span class="text-muted">(Layer 3)</span></div>
+          <div class="ml-8 text-muted">ARIA-C &rarr; gcc &rarr; native binary</div>
+          <div class="text-muted ml-8">&darr;</div>
+          <div class="ml-4"><span class="text-text">Intent Verification</span> <span class="text-muted">(Layer 4)</span></div>
+        </div>
+      </section>
+
+      <!-- Why not Clojure as target -->
+      <section class="mb-16">
+        <h2 class="font-mono text-2xl font-bold mb-6">Why Not Just Use Clojure as the Target?</h2>
+        <div class="space-y-4 text-text/90 leading-relaxed">
+          <p>
+            This is the obvious question. Clojure is s-expressions. ARIA-IR is s-expressions. Why not skip the IR and have the AI generate Clojure directly?
+          </p>
+          <p>
+            Because Clojure is still designed for humans. Namespaces, macros, lazy sequences, ergonomic abstractions. These features make Clojure productive for human authors. They add ambiguity and complexity for AI authors. ARIA-IR keeps the syntax but strips the ergonomics, replacing them with what the AI-to-machine pipeline actually needs: explicit types, declared effects, and verifiable intent.
+          </p>
+        </div>
+      </section>
+
+      <!-- Why implement in Clojure -->
+      <section>
+        <h2 class="font-mono text-2xl font-bold mb-6">Why Implement the Toolchain in Clojure?</h2>
+        <div class="space-y-4 text-text/90 leading-relaxed">
+          <p>
+            The structural DNA argument. Parsing s-expressions in a language that <em>is</em> s-expressions. The parser collapses. The Clojure reader does most of the work. An ARIA-IR file is something Clojure can practically <code>read</code> natively. This is not a coincidence. It is the right choice.
+          </p>
+          <p>
+            The toolchain does not fight the representation. It is the representation. A Lisp compiler for a Lisp IR. The tool and the material are the same substance.
+          </p>
+        </div>
+      </section>
+    </div>
+  </article>
+</Base>

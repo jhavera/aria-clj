@@ -1,0 +1,75 @@
+---
+import Base from '../../layouts/Base.astro';
+---
+<Base title="Why ARIA, Why Now - ARIA Blog">
+  <article class="py-16 px-4">
+    <div class="max-w-3xl mx-auto">
+      <a href="/blog" class="text-sm text-muted hover:text-accent transition-colors">&larr; Back to Blog</a>
+
+      <header class="mt-6 mb-12">
+        <h1 class="font-mono text-3xl md:text-4xl font-bold mb-4">Why ARIA, Why Now</h1>
+        <div class="flex items-center gap-3 text-sm text-muted">
+          <time datetime="2026-03-11">March 11, 2026</time>
+          <span>&middot;</span>
+          <span>John Avera</span>
+        </div>
+      </header>
+
+      <div class="space-y-6 text-text/90 leading-relaxed">
+        <p>
+          Every major AI lab ships code generation. Copilot, Claude, Gemini. The output is Python, JavaScript, Rust, Go. Human languages for human readers.
+        </p>
+
+        <p>
+          But the pipeline has changed. The AI writes the code. The compiler consumes the code. The human reviews the code at most. Often not even that. In CI/CD pipelines, generated code flows from prompt to production without a human ever reading a line.
+        </p>
+
+        <p>
+          The intermediate representation between the AI and the compiler is still optimized for a human audience. Indentation conventions. Readable variable names. Syntactic sugar that exists to reduce keystrokes for fingers that are no longer typing.
+        </p>
+
+        <p>
+          This is not wrong. It is legacy. And like all legacy, it creates drag.
+        </p>
+
+        <h2 class="font-mono text-2xl font-bold mt-12 mb-6">The drag</h2>
+
+        <p>
+          When an AI generates Python, it must navigate Python's ambiguity. Operator overloading. Dynamic typing. Import resolution. Context-dependent syntax. The AI must make choices that optimize for human comprehension, not for compiler consumption. Every one of those choices is a potential source of error.
+        </p>
+
+        <p>
+          When a compiler consumes that Python, it must parse syntax designed for readability, not for analysis. It must infer types the AI already knew. It must resolve ambiguities the AI should never have introduced.
+        </p>
+
+        <p>
+          Both ends of the pipeline are working harder than they need to, because the representation in the middle was designed for a third party who is not present.
+        </p>
+
+        <h2 class="font-mono text-2xl font-bold mt-12 mb-6">The alternative</h2>
+
+        <p>
+          ARIA is an s-expression intermediate representation where the AI states types explicitly, declares effects, annotates intent, and produces code that a compiler can consume without guessing. No syntax sugar. No implicit coercion. No ambiguity.
+        </p>
+
+        <p>
+          The AI does less work to produce ARIA-IR than to produce Python. The compiler does less work to consume it. The pipeline is tighter. The error surface is smaller. And the intent annotations carry the AI's reasoning through to the output, making verification possible at the other end.
+        </p>
+
+        <h2 class="font-mono text-2xl font-bold mt-12 mb-6">Why now</h2>
+
+        <p>
+          Two years ago, AI code generation was a curiosity. Today it is infrastructure. The volume of AI-generated code flowing through production systems doubles quarterly. The question is no longer whether AI will write most of the code. The question is what that code should look like.
+        </p>
+
+        <p>
+          ARIA is one answer. We think it is the right one. And we think the time to build the toolchain is now, before the defaults calcify.
+        </p>
+
+        <p>
+          The Clojure implementation is live, open source, and compiling real programs to native binaries. Start with the <a href="/get-started" class="text-accent hover:underline">Get Started</a> guide, or read the <a href="/what-is-aria" class="text-accent hover:underline">technical overview</a>.
+        </p>
+      </div>
+    </div>
+  </article>
+</Base>

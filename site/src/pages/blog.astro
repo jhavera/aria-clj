@@ -1,0 +1,44 @@
+---
+import Base from '../layouts/Base.astro';
+
+const posts = [
+  {
+    title: 'Why ARIA, Why Now',
+    date: '2026-03-11',
+    author: 'John Avera',
+    summary: 'The thesis introduction. Why AI-optimized intermediate representations are the right abstraction for the prompt-to-binary pipeline, and why the time to build one is now.',
+    slug: 'why-aria-why-now',
+  },
+  {
+    title: 'Choosing Clojure: The S-Expression Alignment Argument',
+    date: '2026-03-11',
+    author: 'John Avera',
+    summary: 'Parsing s-expressions in a language that is s-expressions. Why Clojure is the structurally inevitable choice for the ARIA toolchain.',
+    slug: 'choosing-clojure',
+  },
+];
+---
+<Base title="Blog - ARIA">
+  <article class="py-16 px-4">
+    <div class="max-w-3xl mx-auto">
+      <h1 class="font-mono text-3xl md:text-4xl font-bold mb-4">Blog</h1>
+      <p class="text-muted mb-12">Updates, decisions, and research from the ARIA project.</p>
+
+      <div class="space-y-8">
+        {posts.map(post => (
+          <article class="bg-surface border border-border rounded-lg p-6 hover:border-accent/50 transition-colors">
+            <div class="flex items-center gap-3 text-sm text-muted mb-3">
+              <time datetime={post.date}>{new Date(post.date).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}</time>
+              <span>&middot;</span>
+              <span>{post.author}</span>
+            </div>
+            <h2 class="font-mono text-xl font-bold mb-2">
+              <a href={`/blog/${post.slug}`} class="hover:text-accent transition-colors">{post.title}</a>
+            </h2>
+            <p class="text-muted text-sm leading-relaxed">{post.summary}</p>
+          </article>
+        ))}
+      </div>
+    </div>
+  </article>
+</Base>

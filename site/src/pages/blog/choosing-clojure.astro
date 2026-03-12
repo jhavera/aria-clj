@@ -1,0 +1,77 @@
+---
+import Base from '../../layouts/Base.astro';
+---
+<Base title="Choosing Clojure - ARIA Blog">
+  <article class="py-16 px-4">
+    <div class="max-w-3xl mx-auto">
+      <a href="/blog" class="text-sm text-muted hover:text-accent transition-colors">&larr; Back to Blog</a>
+
+      <header class="mt-6 mb-12">
+        <h1 class="font-mono text-3xl md:text-4xl font-bold mb-4">Choosing Clojure: The S-Expression Alignment Argument</h1>
+        <div class="flex items-center gap-3 text-sm text-muted">
+          <time datetime="2026-03-11">March 11, 2026</time>
+          <span>&middot;</span>
+          <span>John Avera</span>
+        </div>
+      </header>
+
+      <div class="space-y-6 text-text/90 leading-relaxed">
+        <p>
+          The first prototype of the ARIA toolchain was Python. Python is the default for everything in the AI ecosystem. It was expedient. It worked.
+        </p>
+
+        <p>
+          It was also wrong.
+        </p>
+
+        <p>
+          Not wrong in the sense that it produced incorrect results. The Python compiler parses ARIA-IR files, type-checks them, and generates C code that compiles to correct binaries. It works. But the implementation fights the representation at every step.
+        </p>
+
+        <h2 class="font-mono text-2xl font-bold mt-12 mb-6">The structural argument</h2>
+
+        <p>
+          ARIA-IR is s-expressions. Nested parenthesized forms. <code>(module ...)</code> containing <code>(func ...)</code> containing <code>(if ... (then ...) (else ...))</code>. The syntax is the abstract syntax tree. There is no separate parse tree.
+        </p>
+
+        <p>
+          In Python, parsing s-expressions requires a hand-written lexer and recursive descent parser. Tokenize the input. Match parentheses. Build an AST from tokens. Hundreds of lines of code to parse a format that a Lisp reader handles natively.
+        </p>
+
+        <p>
+          In Clojure, the parser is one function call: <code>read-string</code>. The Clojure reader consumes s-expressions as its native data format. An ARIA-IR file is already a valid Clojure data structure (with minor preprocessing for the <code>$</code> and <code>%</code> variable prefixes). The parser collapses.
+        </p>
+
+        <h2 class="font-mono text-2xl font-bold mt-12 mb-6">The semantic argument</h2>
+
+        <p>
+          Clojure's immutable data structures mirror ARIA-IR's SSA semantics. A <code>%</code>-bound value in ARIA-IR cannot be reassigned. A value in Clojure cannot be mutated. The toolchain's data model and the IR's data model are the same.
+        </p>
+
+        <p>
+          The compiler pipeline is a sequence of pure transformations: read, validate, type-check, generate. Each stage takes immutable data and returns immutable data. In Python, this requires discipline. In Clojure, it is the default.
+        </p>
+
+        <h2 class="font-mono text-2xl font-bold mt-12 mb-6">The practical argument</h2>
+
+        <p>
+          Clojure runs on the JVM. A single uberjar runs on any platform with Java installed. No native compilation matrix. No platform-specific builds. One artifact, every target.
+        </p>
+
+        <p>
+          The Clojure ecosystem has mature tooling for exactly the kind of work a compiler does: data transformation, tree walking, pattern matching (via <code>core.match</code>), specification (via <code>spec</code> or <code>malli</code>). These are not incidental features. They are the core of what Clojure was designed for.
+        </p>
+
+        <h2 class="font-mono text-2xl font-bold mt-12 mb-6">The result</h2>
+
+        <p>
+          The Clojure implementation of the ARIA toolchain is smaller, faster to develop, and structurally cleaner than the Python prototype. The reader is a few lines of preprocessing plus <code>read-string</code>. The AST is plain Clojure maps. The type checker threads immutable environments through recursive validation. The C codegen walks the AST with multimethods.
+        </p>
+
+        <p>
+          A Lisp compiler for a Lisp IR. The tool and the material are the same substance. This is not clever. It is inevitable.
+        </p>
+      </div>
+    </div>
+  </article>
+</Base>
