@@ -9,77 +9,109 @@ import Base from '../layouts/Base.astro';
 
       <div class="prose-custom space-y-6 text-text/90 leading-relaxed">
         <p>
-          Baghdad, 2006. I had just returned from a deployment. I bought a book on LISP. I did not know why. Something about the way the parentheses nested felt like the way my thoughts nested. Structure reflecting structure.
+          June 15, 2006. I had just returned from a year-long deployment to Baghdad. I was restarting my life with my wife and kids, trying to remember what it felt like to think about something other than survival. I needed to get excited about technology again.
         </p>
 
         <p>
-          I read about AI. Not the deep learning that would arrive a decade later, but the older kind. Symbolic reasoning. Programs that could write programs. I wrote two blog posts on a free Blogger account in June 2006. The first was about starting over. The second was about a programming language idea. The timestamps are still there.
+          So I did what any sane person returning from a war zone would do. I started studying artificial intelligence.
         </p>
 
         <p>
-          The idea was simple: if machines are going to write code, and machines are going to read code, the language in the middle should be designed for machines on both ends. Not for a human staring at a screen. Not for readability. For precision. For composability. For verification.
+          I wrote about it that day, the very first blog post after coming home. That entry, timestamped June 15, 2006, is still online: <a href="https://johnavera.blogspot.com/2006/06/start-of-new-life.html" target="_blank" rel="noopener" class="text-accent hover:underline">"The Start of a New Life"</a>. In it I wrote: "Today is the day I have started my studies of Artificial Intelligence (AI). AI has always interested me, but I have only studied what I could do with program code, not what it can do for me." Within hours I had learned about Alan Turing and stumbled onto LISP.
         </p>
 
         <p>
-          I did not have the tools to build it. Not yet.
+          The next day I wrote <a href="https://johnavera.blogspot.com/2006/06/newold-prgramming-language.html" target="_blank" rel="noopener" class="text-accent hover:underline">another post</a>. I was learning LISP, the second oldest programming language still in active use, created by John McCarthy, the father of artificial intelligence himself. I emailed a fellow architect, Derek Burt, about it: "I have been trying to learn Lisp (yeah... I said Lisp). Since I started down this path, I am learning more about programming languages than I have ever before."
         </p>
 
         <p>
-          The career that followed gave me the tools. IBM, where I learned what enterprise systems actually look like at scale. Air Combat Command Federal Laboratory, where I learned what happens when software fails in systems that cannot fail. FinTech, where I learned that moving fast means nothing if the foundation cracks. Chief Architect at Booz Allen Hamilton, where I built the AVERA architecture and contributed to the first AI-controlled military flight on the U-2 program.
+          I was a Java developer at IBM. I was used to class hierarchies, interfaces, design patterns, and semicolons everywhere. LISP felt alien. It also felt inevitable, like I was looking at something fundamental that the industry had paved over with decades of syntactic sugar.
         </p>
 
         <p>
-          Each stop taught me the same lesson from a different angle: the gap between what AI can do and what production systems need is not a technology gap. It is a representation gap. The AI speaks in one language. The machine consumes another. And the human in the middle, translating, is the bottleneck that everyone pretends does not exist.
+          Then life happened. Career at IBM. Two more combat deployments to Afghanistan. Air Combat Command Federal Laboratory, the U-2 Fed Lab. A pandemic. FinTech. Twenty years of building things in Java, Python, and the enterprise stack. LISP went to the back of my mind. But it never left.
         </p>
 
         <p>
-          As CTO of xOrbita, building AI-powered space domain awareness, I see the same pattern every day. AI generates code. Engineers review code. Compilers compile code. Three different audiences, one artifact. The artifact is optimized for the middle audience. The one who is increasingly absent from the loop.
+          A few weeks ago, I wrote an article about building a space debris tracking game in COBOL after Anthropic announced Claude Code could modernize legacy COBOL codebases and IBM's stock fell 13% in a day. Writing that piece kicked something loose. I kept thinking about a question that wouldn't leave me alone.
+        </p>
+
+        <p class="text-xl font-medium">
+          If AI is writing the code, why does the code need to be readable by humans?
         </p>
 
         <p>
-          The question that would not go away: if AI writes the code, and a compiler reads it, why is the intermediate layer still designed for humans who are not present?
+          When a C compiler generates machine code, nobody reads the assembly output. We don't expect to. We trust the compiler to faithfully translate intent into instructions the CPU can execute. Now look at the AI code generation pipeline: human prompt in English, AI generates Python, Python interpreter produces a result. Who is that Python for? Not the machine. Not the AI. It is for the human developer who wants to inspect and understand the output.
+        </p>
+
+        <p>
+          But what happens when the AI gets good enough that you don't need to inspect it? Then the human-readable layer becomes what it actually is: unnecessary overhead.
         </p>
 
         <h2 class="font-mono text-2xl font-bold mt-12 mb-6 text-accent">ARIA</h2>
 
         <p>
-          ARIA is the answer. AI Representation for Instruction Architecture. An s-expression intermediate representation designed from first principles for the AI-author, compiler-consumer pipeline. No syntax sugar. No ergonomic abstractions. No concessions to readability. Every decision optimized for the two parties actually in the room.
+          That question became ARIA. AI Representation for Instruction Architecture.
         </p>
 
         <p>
-          The Python prototype proved the concept. The Clojure implementation is the real thing.
+          Instead of having AI generate code in languages designed for human consumption, give it a representation optimized for the AI-to-compiler pipeline. S-expressions, unambiguous, tree-structured, with zero precedence rules. Explicit types on every operation. First-class intent annotations that say what a function is supposed to do, not just how it does it. Effect declarations that the compiler enforces. One representation that compiles to any target.
+        </p>
+
+        <p>
+          Then the circle closed.
+        </p>
+
+        <p>
+          ARIA-IR is s-expressions. The same notation I discovered in June 2006 when I was trying to relearn how to be excited about technology after a year in a war zone. When I looked at the toolchain, a lexer, parser, type checker, and code generator, all written in Python to process s-expression files, a thought hit me that felt less like an engineering decision and more like something clicking into place after twenty years.
         </p>
 
         <h2 class="font-mono text-2xl font-bold mt-12 mb-6 text-accent">Why Clojure</h2>
 
-        <p>
-          ARIA-IR is s-expressions. Clojure is s-expressions. A Lisp compiler for a Lisp IR. The parser collapses to a reader call plus validation. The toolchain and the representation share structural DNA. This is not clever. It is inevitable.
+        <p class="text-xl font-medium">
+          Why am I using Python to parse s-expressions when there is a language built on s-expressions?
         </p>
 
         <p>
-          This project is not a thesis exercise. It is the answer to a question I have been holding for twenty years.
+          Clojure is the most modern dialect of LISP. It runs on the JVM. It has immutable persistent data structures that mirror ARIA's SSA semantics. Its reader can parse s-expressions natively, meaning the 400-line Python lexer practically disappears. The toolchain and the representation share the same structural DNA. ARIA-IR is s-expressions. Clojure is s-expressions. The compiler for an AI language is written in the same notation as the language itself.
+        </p>
+
+        <p>
+          That is not a coincidence. It is the right choice.
+        </p>
+
+        <p>
+          The parentheses were always there, waiting. Twenty years. Two wars. One question.
+        </p>
+
+        <p class="text-xl font-medium">
+          This is the answer.
         </p>
 
         <p class="text-xl font-medium mt-12">
-          If you believe this too, <a href="/contributing" class="text-accent hover:underline">contribute</a>.
+          If you believe this too, <a href="https://github.com/jhavera/aria-clj" target="_blank" rel="noopener" class="text-accent hover:underline">contribute</a>.
         </p>
       </div>
 
       <!-- Sidebar: Evidence -->
       <aside class="mt-16 pt-8 border-t border-border">
-        <h3 class="font-mono text-sm font-semibold text-muted uppercase tracking-wider mb-4">Primary Sources</h3>
+        <h3 class="font-mono text-sm font-semibold text-muted uppercase tracking-wider mb-4">Timestamped Evidence</h3>
         <div class="space-y-3 text-sm">
           <div>
-            <a href="https://johnavera.blogspot.com/2006/06/start-of-new-life.html" target="_blank" rel="noopener" class="text-accent hover:underline">Start of a New Life</a>
-            <span class="text-muted"> &mdash; June 2006, johnavera.blogspot.com</span>
+            <a href="https://johnavera.blogspot.com/2006/06/start-of-new-life.html" target="_blank" rel="noopener" class="text-accent hover:underline">The Start of a New Life</a>
+            <span class="text-muted"> &mdash; June 15, 2006, johnavera.blogspot.com</span>
           </div>
           <div>
-            <a href="https://johnavera.blogspot.com/2006/06/newold-prgramming-language.html" target="_blank" rel="noopener" class="text-accent hover:underline">New/Old Programming Language</a>
-            <span class="text-muted"> &mdash; June 2006, johnavera.blogspot.com</span>
+            <a href="https://johnavera.blogspot.com/2006/06/newold-prgramming-language.html" target="_blank" rel="noopener" class="text-accent hover:underline">The New/Old Programming Language</a>
+            <span class="text-muted"> &mdash; June 16, 2006, johnavera.blogspot.com</span>
           </div>
+        </div>
+
+        <h3 class="font-mono text-sm font-semibold text-muted uppercase tracking-wider mb-4 mt-8">Extended Reading</h3>
+        <div class="space-y-3 text-sm">
           <div>
             <a href="https://medium.com/@jhavera/from-baghdad-to-s-expressions-why-i-built-an-ai-language-that-humans-were-never-meant-to-read-6c0c992cb48b" target="_blank" rel="noopener" class="text-accent hover:underline">From Baghdad to S-Expressions</a>
-            <span class="text-muted"> &mdash; Medium, extended reading</span>
+            <span class="text-muted"> &mdash; Medium</span>
           </div>
         </div>
       </aside>
