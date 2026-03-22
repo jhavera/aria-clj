@@ -15,6 +15,7 @@
             [aria.checker :as checker]
             [aria.codegen-c :as codegen-c]
             [aria.codegen-wat :as codegen-wat]
+            [aria.reader :as reader]
             [clojure.pprint :as pp]
             [clojure.string :as str])
   (:import [java.io File]))
@@ -76,11 +77,131 @@
     (.waitFor proc)
     (.exitValue proc)))
 
+;; ── Comptime evaluation (two-pass) ──────────────────────────
+
+(defn- comptime-form?
+  "Is this raw s-expression a (comptime ...) block?"
+  [form]
+  (and (seq? form)
+       (symbol? (first form))
+       (= "comptime" (name (first form)))))
+
+(defn- separate-comptime
+  "Given the raw module form (module \"name\" form1 form2 ...),
+   return {:module-head [module-sym name], :forms [...], :has-comptime? bool}.
+   Each element in :forms is either a normal form or {:comptime-idx N :forms [...]}"
+  [module-form]
+  (let [[module-sym module-name & top-forms] module-form
+        indexed (map-indexed
+                 (fn [idx form]
+                   (if (comptime-form? form)
+                     {:comptime-idx idx :forms (rest form)}
+                     form))
+                 top-forms)]
+    {:module-head [module-sym module-name]
+     :forms (vec indexed)
+     :has-comptime? (some map? indexed)}))
+
+(defn- build-comptime-module
+  "Wrap comptime forms in a temporary ARIA module source string."
+  [idx forms]
+  (let [module-name (str "comptime_" idx)
+        ;; Convert forms back to source strings
+        form-strs (map pr-str forms)]
+    (str "(module \"" module-name "\"\n"
+         (str/join "\n" form-strs)
+         ")")))
+
+(defn- compile-and-run-c!
+  "Compile ARIA C source, run the binary, and return {:exit int :stdout string :stderr string}."
+  [c-source module-name]
+  (let [tmp-c (str "/tmp/aria_comptime_" module-name ".c")
+        tmp-bin (str "/tmp/aria_comptime_" module-name)]
+    (spit tmp-c c-source)
+    (let [gcc-proc (.start (ProcessBuilder.
+                            ["gcc" "-std=c99" "-Wall" "-fwrapv"
+                             "-o" tmp-bin tmp-c "-lm"]))]
+      (.waitFor gcc-proc)
+      (if-not (zero? (.exitValue gcc-proc))
+        (let [err (slurp (.getErrorStream gcc-proc))]
+          {:exit (.exitValue gcc-proc)
+           :stdout ""
+           :stderr (str "gcc compilation failed:\n" err)})
+        ;; Run the binary and capture stdout
+        (let [run-pb (ProcessBuilder. [tmp-bin])
+              run-proc (.start run-pb)
+              stdout (slurp (.getInputStream run-proc))
+              stderr (slurp (.getErrorStream run-proc))]
+          (.waitFor run-proc)
+          ;; Clean up temp files
+          (.delete (File. tmp-c))
+          (.delete (File. tmp-bin))
+          {:exit (.exitValue run-proc)
+           :stdout stdout
+           :stderr stderr})))))
+
+(defn- evaluate-comptime-block
+  "Evaluate a single comptime block: compile as temp module via C backend, execute,
+   return stdout as a string of ARIA s-expressions."
+  [idx forms]
+  (let [module-src (build-comptime-module idx forms)
+        ;; Parse and compile the temp module through the normal pipeline
+        module (parser/parse module-src)
+        check-result (checker/check module)]
+    (when-not (:ok? check-result)
+      (throw (ex-info (str "Comptime block " idx " failed type-check")
+                      {:errors (:errors check-result)})))
+    (let [c-source (codegen-c/generate module)
+          result (compile-and-run-c! c-source (str "comptime_" idx))]
+      (when-not (zero? (:exit result))
+        (throw (ex-info (str "Comptime block " idx " execution failed")
+                        {:exit (:exit result)
+                         :stderr (:stderr result)})))
+      (:stdout result))))
+
+(defn- splice-comptime-results
+  "Replace comptime block placeholders with their evaluated results.
+   Returns a new raw module form ready for normal parsing."
+  [{:keys [module-head forms]} comptime-results]
+  (let [expanded (mapcat
+                  (fn [form]
+                    (if (map? form)
+                      ;; This is a comptime placeholder — get its result
+                      (let [stdout (get comptime-results (:comptime-idx form))]
+                        (if (str/blank? stdout)
+                          []  ;; Empty output → remove cleanly
+                          (reader/read-all-aria stdout)))
+                      [form]))
+                  forms)]
+    (apply list (concat module-head expanded))))
+
+(defn expand-comptime
+  "Two-pass comptime expansion. Returns the expanded raw module form."
+  [module-form]
+  (let [{:keys [has-comptime?] :as separated} (separate-comptime module-form)]
+    (if-not has-comptime?
+      module-form  ;; Fast path: no comptime blocks
+      (let [;; Evaluate all comptime blocks
+            comptime-results
+            (reduce
+             (fn [results form]
+               (if (map? form)
+                 (let [idx (:comptime-idx form)]
+                   (println (str "  Evaluating comptime block " idx "..."))
+                   (assoc results idx (evaluate-comptime-block idx (:forms form))))
+                 results))
+             {}
+             (:forms separated))]
+        (splice-comptime-results separated comptime-results)))))
+
 (defn- process-file
   [path {:keys [emit-c emit-wat emit-ast check-only run output backend optimize]}]
   (let [source (slurp path)
         _ (println (str "Parsing " path "..."))
-        module (parser/parse source)
+        ;; Two-pass: expand comptime blocks before parsing
+        raw-form (reader/read-aria source)
+        expanded-form (expand-comptime raw-form)
+        module (parser/parse-module expanded-form)
         _ (println (str "  Module: " (:name module)
                         " (" (count (:functions module)) " functions)"))
 

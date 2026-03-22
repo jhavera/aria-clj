@@ -1,0 +1,38 @@
+; ═══════════════════════════════════════════════════════════
+; ARIA Example: Comptime
+; Demonstrates: compile-time code generation via two-pass model
+; ═══════════════════════════════════════════════════════════
+
+(module "comptime_demo"
+
+  ;; This comptime block runs at compile time and emits ARIA definitions.
+  ;; It generates a lookup table function with pre-computed squares.
+  (comptime
+    (func $main
+      (result i32)
+      (effects io)
+
+      ;; Generate a function that returns pre-computed squares
+      (print "(func $square_lookup\n")
+      (print "  (param $n i32)\n")
+      (print "  (result i32)\n")
+      (print "  (effects pure)\n")
+      (print "  (if (eq.i32 $n 0) (then (return 0))\n")
+      (print "    (else (if (eq.i32 $n 1) (then (return 1))\n")
+      (print "      (else (if (eq.i32 $n 2) (then (return 4))\n")
+      (print "        (else (if (eq.i32 $n 3) (then (return 9))\n")
+      (print "          (else (if (eq.i32 $n 4) (then (return 16))\n")
+      (print "            (else (return -1))))))))))))\n")
+      (return 0)))
+
+  (func $main
+    (result i32)
+    (effects io)
+
+    (print "Square of 0: %d\n" (call $square_lookup 0))
+    (print "Square of 1: %d\n" (call $square_lookup 1))
+    (print "Square of 2: %d\n" (call $square_lookup 2))
+    (print "Square of 3: %d\n" (call $square_lookup 3))
+    (print "Square of 4: %d\n" (call $square_lookup 4))
+    (print "Unknown (5): %d\n" (call $square_lookup 5))
+    (return 0)))
