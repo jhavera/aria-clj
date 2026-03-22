@@ -6,6 +6,13 @@
   (:require [aria.ast :as ast]
             [clojure.string :as str]))
 
+;; ── Signed Integer Overflow ──────────────────────────────────
+;; C signed integer overflow is undefined behavior (UB). Compilers may
+;; optimize assuming no overflow, producing results that differ from WASM
+;; at -O2 and above. WASM always wraps (modular 2^32 / 2^64).
+;; For cross-backend reproducibility, compile with -fwrapv.
+;; For intentional wrapping, prefer unsigned types (u32, u64).
+
 ;; ── State ─────────────────────────────────────────────────────
 
 (defn- make-codegen []
