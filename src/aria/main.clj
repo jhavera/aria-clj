@@ -77,7 +77,7 @@
     (.waitFor proc)
     (.exitValue proc)))
 
-;; ── Comptime evaluation (two-pass) ──────────────────────────
+;; ── Comptime evaluation ──────────────────────────────────────
 
 (defn- comptime-form?
   "Is this raw s-expression a (comptime ...) block?"
@@ -86,27 +86,10 @@
        (symbol? (first form))
        (= "comptime" (name (first form)))))
 
-(defn- separate-comptime
-  "Given the raw module form (module \"name\" form1 form2 ...),
-   return {:module-head [module-sym name], :forms [...], :has-comptime? bool}.
-   Each element in :forms is either a normal form or {:comptime-idx N :forms [...]}"
-  [module-form]
-  (let [[module-sym module-name & top-forms] module-form
-        indexed (map-indexed
-                 (fn [idx form]
-                   (if (comptime-form? form)
-                     {:comptime-idx idx :forms (rest form)}
-                     form))
-                 top-forms)]
-    {:module-head [module-sym module-name]
-     :forms (vec indexed)
-     :has-comptime? (some map? indexed)}))
-
 (defn- build-comptime-module
   "Wrap comptime forms in a temporary ARIA module source string."
   [idx forms]
   (let [module-name (str "comptime_" idx)
-        ;; Convert forms back to source strings
         form-strs (map pr-str forms)]
     (str "(module \"" module-name "\"\n"
          (str/join "\n" form-strs)
@@ -127,13 +110,11 @@
           {:exit (.exitValue gcc-proc)
            :stdout ""
            :stderr (str "gcc compilation failed:\n" err)})
-        ;; Run the binary and capture stdout
         (let [run-pb (ProcessBuilder. [tmp-bin])
               run-proc (.start run-pb)
               stdout (slurp (.getInputStream run-proc))
               stderr (slurp (.getErrorStream run-proc))]
           (.waitFor run-proc)
-          ;; Clean up temp files
           (.delete (File. tmp-c))
           (.delete (File. tmp-bin))
           {:exit (.exitValue run-proc)
@@ -145,7 +126,6 @@
    return stdout as a string of ARIA s-expressions."
   [idx forms]
   (let [module-src (build-comptime-module idx forms)
-        ;; Parse and compile the temp module through the normal pipeline
         module (parser/parse module-src)
         check-result (checker/check module)]
     (when-not (:ok? check-result)
@@ -159,48 +139,145 @@
                          :stderr (:stderr result)})))
       (:stdout result))))
 
-(defn- splice-comptime-results
-  "Replace comptime block placeholders with their evaluated results.
-   Returns a new raw module form ready for normal parsing."
-  [{:keys [module-head forms]} comptime-results]
-  (let [expanded (mapcat
-                  (fn [form]
-                    (if (map? form)
-                      ;; This is a comptime placeholder — get its result
-                      (let [stdout (get comptime-results (:comptime-idx form))]
-                        (if (str/blank? stdout)
-                          []  ;; Empty output → remove cleanly
-                          (reader/read-all-aria stdout)))
-                      [form]))
-                  forms)]
-    (apply list (concat module-head expanded))))
+;; ── Top-level comptime (splice N forms as module siblings) ──
+
+(defn- expand-toplevel-comptime
+  "Expand comptime blocks that are direct children of the module form.
+   Each block's stdout is parsed as N top-level forms and spliced in place."
+  [module-form counter]
+  (let [[module-sym module-name & top-forms] module-form
+        has-comptime? (some comptime-form? top-forms)]
+    (if-not has-comptime?
+      module-form
+      (let [expanded (mapcat
+                      (fn [form]
+                        (if (comptime-form? form)
+                          (let [idx (swap! counter inc)
+                                stdout (evaluate-comptime-block
+                                        idx (rest form))]
+                            (println (str "  Evaluating comptime block " idx "..."))
+                            (if (str/blank? stdout)
+                              []
+                              (reader/read-all-aria stdout)))
+                          [form]))
+                      top-forms)]
+        (apply list (concat [module-sym module-name] expanded))))))
+
+;; ── Expression-level comptime (splice 1 form in-place) ──────
+
+(defn- walk-sexp
+  "Bottom-up walk of s-expressions, preserving list types.
+   clojure.walk/postwalk converts lists to seqs which breaks ARIA parsing."
+  [f form]
+  (if (seq? form)
+    (f (apply list (map #(walk-sexp f %) form)))
+    (f form)))
+
+(defn- has-nested-comptime?
+  "Check if any s-expression nested inside the module body contains a comptime form."
+  [module-form]
+  (let [found (atom false)]
+    (walk-sexp (fn [form]
+                 (when (comptime-form? form)
+                   (reset! found true))
+                 form)
+               module-form)
+    @found))
+
+(defn- expand-expr-comptime
+  "Expand comptime blocks nested inside expressions.
+   Each block's stdout must produce exactly one form."
+  [module-form counter]
+  (if-not (has-nested-comptime? module-form)
+    module-form
+    (walk-sexp
+     (fn [form]
+       (if (comptime-form? form)
+         (let [idx (swap! counter inc)
+               _ (println (str "  Evaluating comptime expr " idx "..."))
+               stdout (evaluate-comptime-block idx (rest form))
+               results (reader/read-all-aria stdout)]
+           (when (not= 1 (count results))
+             (throw (ex-info
+                     (str "Expression-level comptime must produce exactly one form, got "
+                          (count results))
+                     {:comptime-idx idx :count (count results) :output stdout})))
+           (first results))
+         form))
+     module-form)))
+
+;; ── comptime-val sugar ───────────────────────────────────────
+
+(def ^:private comptime-val-formats
+  "Type name → printf format for comptime-val desugaring."
+  {"i32" "%d" "i64" "%ld" "u32" "%u" "u64" "%lu"
+   "f32" "%.17g" "f64" "%.17g" "bool" "%d"
+   "i8" "%d" "i16" "%d" "u8" "%u" "u16" "%u"})
+
+(defn- comptime-val-form?
+  "Is this raw s-expression a (comptime-val TYPE expr...) block?"
+  [form]
+  (and (seq? form)
+       (symbol? (first form))
+       (= "comptime-val" (name (first form)))))
+
+(defn- desugar-comptime-val
+  "Walk s-expressions and replace (comptime-val TYPE expr...) with a full
+   comptime block that wraps the expression in a module with $main."
+  [module-form]
+  (walk-sexp
+   (fn [form]
+     (if (comptime-val-form? form)
+       (let [[_ type-sym & body-exprs] form
+             type-name (name type-sym)
+             fmt (or (comptime-val-formats type-name)
+                     (throw (ex-info (str "comptime-val: unsupported type " type-name)
+                                     {:type type-name})))]
+         ;; Build: (comptime (func $main (result i32) (effects io) (print FMT expr...) (return 0)))
+         (let [print-form (apply list (concat [(symbol "print") fmt] body-exprs))
+               return-form (list (symbol "return") 0)
+               func-form (list (symbol "func") (symbol "aria$main")
+                               (list (symbol "result") (symbol "i32"))
+                               (list (symbol "effects") (symbol "io"))
+                               print-form
+                               return-form)]
+           (list (symbol "comptime") func-form)))
+       form))
+   module-form))
+
+;; ── Expansion orchestrator ──────────────────────────────────
 
 (defn expand-comptime
-  "Two-pass comptime expansion. Returns the expanded raw module form."
+  "Single round of comptime expansion: desugar comptime-val, then expand
+   top-level comptime (multi-form splice), then expression comptime (single-form)."
   [module-form]
-  (let [{:keys [has-comptime?] :as separated} (separate-comptime module-form)]
-    (if-not has-comptime?
-      module-form  ;; Fast path: no comptime blocks
-      (let [;; Evaluate all comptime blocks
-            comptime-results
-            (reduce
-             (fn [results form]
-               (if (map? form)
-                 (let [idx (:comptime-idx form)]
-                   (println (str "  Evaluating comptime block " idx "..."))
-                   (assoc results idx (evaluate-comptime-block idx (:forms form))))
-                 results))
-             {}
-             (:forms separated))]
-        (splice-comptime-results separated comptime-results)))))
+  (let [counter (atom -1)
+        after-desugar (desugar-comptime-val module-form)
+        after-toplevel (expand-toplevel-comptime after-desugar counter)
+        after-expr (expand-expr-comptime after-toplevel counter)]
+    after-expr))
+
+(defn expand-all
+  "Iterative comptime expansion until fixed point. Handles comptime that generates
+   more comptime (e.g., generics patterns). Max 10 iterations."
+  [module-form]
+  (loop [form module-form
+         iteration 0]
+    (when (> iteration 10)
+      (throw (ex-info "Comptime expansion loop limit exceeded (>10 iterations)"
+                      {:iteration iteration})))
+    (let [expanded (expand-comptime form)]
+      (if (= expanded form)
+        form
+        (recur expanded (inc iteration))))))
 
 (defn- process-file
   [path {:keys [emit-c emit-wat emit-ast check-only run output backend optimize]}]
   (let [source (slurp path)
         _ (println (str "Parsing " path "..."))
-        ;; Two-pass: expand comptime blocks before parsing
+        ;; Expand comptime blocks (iterative until fixed point) before parsing
         raw-form (reader/read-aria source)
-        expanded-form (expand-comptime raw-form)
+        expanded-form (expand-all raw-form)
         module (parser/parse-module expanded-form)
         _ (println (str "  Module: " (:name module)
                         " (" (count (:functions module)) " functions)"))
