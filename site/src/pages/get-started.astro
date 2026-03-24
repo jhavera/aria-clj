@@ -29,6 +29,10 @@ import Base from '../layouts/Base.astro';
             <span>gcc</span>
             <span class="text-muted">for the C backend (compile + run)</span>
           </div>
+          <div class="flex justify-between items-center">
+            <span>wat2wasm + wasmtime</span>
+            <span class="text-muted">for the WASM backend (optional)</span>
+          </div>
         </div>
       </section>
 
@@ -40,6 +44,7 @@ import Base from '../layouts/Base.astro';
         <div class="flex border-b border-border mb-0">
           <button data-tab="source" class="tab-btn px-4 py-2 text-sm font-medium border-b-2 border-transparent text-muted hover:text-text transition-colors" >Source</button>
           <button data-tab="uberjar" class="tab-btn px-4 py-2 text-sm font-medium border-b-2 border-accent text-accent">Uberjar</button>
+          <button data-tab="wasm" class="tab-btn px-4 py-2 text-sm font-medium border-b-2 border-transparent text-muted hover:text-text transition-colors">WASM</button>
           <button data-tab="native" class="tab-btn px-4 py-2 text-sm font-medium border-b-2 border-transparent text-muted/50 cursor-not-allowed">Native Binary <span class="text-xs ml-1 opacity-60">v0.2</span></button>
         </div>
 
@@ -72,6 +77,22 @@ java -jar aria-clj.jar examples/fibonacci.aria --emit-c
 <span class="text-muted"># Full pipeline: parse, check, compile, execute</span>
 java -jar aria-clj.jar examples/fibonacci.aria --run</code></pre>
           <p class="text-xs text-muted">Or build the uberjar yourself: <code>clj -T:build uber</code></p>
+        </div>
+
+        <!-- WASM tab -->
+        <div id="tab-wasm" class="tab-panel hidden pt-6 space-y-4">
+          <p class="text-muted text-sm">Compile ARIA-IR to WebAssembly Text format and run on any WASI runtime. Requires <code>wat2wasm</code> (from <a href="https://github.com/WebAssembly/wabt" target="_blank" rel="noopener" class="text-accent hover:underline">wabt</a>) and <code>wasmtime</code>.</p>
+          <pre><code><span class="text-muted"># Emit WAT to stdout</span>
+clj -M:run examples/fibonacci.aria --emit-wat
+
+<span class="text-muted"># Compile to WASM and execute via wasmtime</span>
+clj -M:run examples/fibonacci.aria --backend wasm --run
+
+<span class="text-muted"># Shorthand: use the :wasm alias</span>
+clj -M:wasm examples/fibonacci.aria --run
+
+<span class="text-muted"># Write optimized WASM binary</span>
+clj -M:run examples/fibonacci.aria --backend wasm --optimize -o fib.wasm</code></pre>
         </div>
 
         <!-- Native tab (disabled) -->

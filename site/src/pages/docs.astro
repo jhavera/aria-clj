@@ -145,6 +145,72 @@ import Base from '../layouts/Base.astro';
 (export $fibonacci)</code></pre>
       </section>
 
+      <!-- Comptime -->
+      <section class="mb-12">
+        <h2 class="font-mono text-2xl font-bold mb-4">Compile-Time Evaluation</h2>
+        <p class="text-text/90 leading-relaxed mb-4">
+          ARIA supports compile-time code generation through a two-pass model. Comptime blocks are compiled via the C backend, executed natively, and their stdout is parsed as ARIA s-expressions and spliced back into the module. Intent verification applies to the post-expansion IR.
+        </p>
+
+        <h3 class="font-mono font-semibold mb-2 mt-6">comptime</h3>
+        <p class="text-muted text-sm mb-3">
+          A top-level <code>comptime</code> block contains functions that run at compile time. Their printed output becomes part of the module.
+        </p>
+        <pre><code>(module "demo"
+  (comptime
+    (func $main (result i32) (effects io)
+      (print "(func $square (param $x i32) (result i32) (effects pure)\n")
+      (print "  (return (mul.i32 $x $x)))\n")
+      (return 0)))
+
+  (func $main (result i32) (effects io)
+    (print "4^2 = %d\n" (call $square 4))
+    (return 0)))</code></pre>
+        <p class="text-muted text-sm mt-3">
+          The comptime block compiles and executes at compile time. Its output (<code>$square</code>) is spliced into the module before the main compilation pass.
+        </p>
+
+        <h3 class="font-mono font-semibold mb-2 mt-6">comptime-val</h3>
+        <p class="text-muted text-sm mb-3">
+          Sugar for computing a single typed value at compile time. Desugars into a full comptime block internally.
+        </p>
+        <pre><code>(let %answer i32 (comptime-val i32 (mul.i32 6 7)))</code></pre>
+        <p class="text-muted text-sm mt-3">
+          Supported types: <code>i32</code>, <code>i64</code>, <code>u32</code>, <code>u64</code>, <code>f32</code>, <code>f64</code>, <code>i8</code>, <code>i16</code>, <code>u8</code>, <code>u16</code>, <code>bool</code>.
+        </p>
+
+        <h3 class="font-mono font-semibold mb-2 mt-6">Generics via comptime</h3>
+        <p class="text-muted text-sm mb-3">
+          Comptime functions that take type names as strings and print type-specialized code. This is the generics mechanism. No templates, no special syntax.
+        </p>
+        <pre><code>(comptime
+  (func $gen_max (param $T (ptr i8)) (effects io)
+    (print "(func $max_%s (param $a %s) (param $b %s) (result %s) (effects pure)\n" $T $T $T $T)
+    (print "  (if (gt.%s $a $b) (then (return $a)) (else (return $b))))\n" $T))
+
+  (func $main (result i32) (effects io)
+    (call $gen_max "i32")
+    (call $gen_max "f64")
+    (return 0)))</code></pre>
+        <p class="text-muted text-sm mt-3">
+          Produces <code>$max_i32</code> and <code>$max_f64</code> as fully monomorphized functions. Expansion iterates to a fixed point (max 10 passes) to handle comptime that generates more comptime.
+        </p>
+
+        <h3 class="font-mono font-semibold mb-2 mt-6">Two-pass model</h3>
+        <div class="bg-surface border border-border rounded-lg p-4 text-sm text-muted space-y-1 font-mono">
+          <div>1. Extract comptime blocks from module</div>
+          <div>2. Wrap in temporary module, compile via C backend</div>
+          <div>3. Execute native binary, capture stdout</div>
+          <div>4. Parse stdout as ARIA s-expressions</div>
+          <div>5. Splice into original module, replacing comptime block</div>
+          <div>6. Repeat until no comptime blocks remain (fixed point)</div>
+          <div>7. Parse, type-check, codegen the expanded module</div>
+        </div>
+        <p class="text-muted text-sm mt-3">
+          Expression-level comptime is also supported. A <code>(comptime ...)</code> nested inside an expression must produce exactly one form.
+        </p>
+      </section>
+
       <!-- Examples -->
       <section>
         <h2 class="font-mono text-2xl font-bold mb-4">Example Programs</h2>
@@ -163,6 +229,18 @@ import Base from '../layouts/Base.astro';
           <div class="bg-surface border border-border rounded-lg p-4">
             <code class="text-accent">math_demo.aria</code>
             <span class="text-muted ml-2">Arithmetic operations. Demonstrates type-suffixed ops, pure functions.</span>
+          </div>
+          <div class="bg-surface border border-border rounded-lg p-4">
+            <code class="text-accent">comptime_demo.aria</code>
+            <span class="text-muted ml-2">Compile-time code generation. Demonstrates the two-pass comptime model.</span>
+          </div>
+          <div class="bg-surface border border-border rounded-lg p-4">
+            <code class="text-accent">comptime_generics.aria</code>
+            <span class="text-muted ml-2">Generics via comptime. Type-parameterized function generation.</span>
+          </div>
+          <div class="bg-surface border border-border rounded-lg p-4">
+            <code class="text-accent">fibonacci-wasi.aria</code>
+            <span class="text-muted ml-2">WASM target. Fibonacci compiled to WAT and run on WASI.</span>
           </div>
         </div>
       </section>

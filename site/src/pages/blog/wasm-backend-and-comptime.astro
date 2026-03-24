@@ -1,0 +1,83 @@
+---
+import Base from '../../layouts/Base.astro';
+---
+<Base title="First External Contribution: WASM Backend and Comptime - ARIA Blog">
+  <article class="py-16 px-4">
+    <div class="max-w-3xl mx-auto">
+      <a href="/blog" class="text-sm text-muted hover:text-accent transition-colors">&larr; Back to Blog</a>
+
+      <header class="mt-6 mb-12">
+        <h1 class="font-mono text-3xl md:text-4xl font-bold mb-4">First External Contribution: WASM Backend and Comptime</h1>
+        <div class="flex items-center gap-3 text-sm text-muted">
+          <time datetime="2026-03-24">March 24, 2026</time>
+          <span>&middot;</span>
+          <span>John Avera</span>
+        </div>
+      </header>
+
+      <div class="space-y-6 text-text/90 leading-relaxed">
+        <p>
+          <a href="https://github.com/arkaitz-dev" target="_blank" rel="noopener" class="text-accent hover:underline">@arkaitz-dev</a> opened PR #1 and shipped two major features: a WebAssembly codegen backend and compile-time evaluation. This is the first external contribution to the project.
+        </p>
+
+        <h2 class="font-mono text-2xl font-bold mt-12 mb-6">What shipped</h2>
+
+        <p>
+          The WASM backend is a complete WAT (WebAssembly Text format) transpiler. 2,300 lines of Clojure that takes the same ARIA-IR AST the C backend consumes and produces WAT output. It includes a full printf-style print runtime implemented in WASM itself, so ARIA programs can run on any WASI-compatible runtime with no host dependencies. The pipeline is: ARIA-IR to WAT to WASM via <code>wat2wasm</code>, with optional <code>wasm-opt</code> optimization.
+        </p>
+
+        <p>
+          Memory management uses a bump allocator with a stack pointer global. Structs get proper field offset computation with alignment. Extern functions emit as WASM imports. The backend handles every ARIA-IR construct the C backend handles: functions, control flow, type-suffixed arithmetic, loops, mutable and immutable bindings, memory operations.
+        </p>
+
+        <p>
+          Cross-backend tests compile the same <code>.aria</code> source through both C and WAT pipelines and compare stdout. The output matches.
+        </p>
+
+        <h2 class="font-mono text-2xl font-bold mt-12 mb-6">Comptime</h2>
+
+        <p>
+          The compile-time evaluation system uses a two-pass model. A <code>(comptime ...)</code> block in an ARIA module gets extracted, wrapped in a temporary module, compiled via the C backend, and executed. Its stdout is parsed as ARIA s-expressions and spliced back into the original module in place of the comptime block. The expanded module then goes through the normal pipeline: parse, type-check, codegen.
+        </p>
+
+        <p>
+          There are three levels. Top-level comptime blocks can emit multiple function definitions. Expression-level comptime produces exactly one form. <code>comptime-val</code> is sugar for computing a single typed constant. Expansion iterates to a fixed point, so comptime can generate more comptime.
+        </p>
+
+        <h2 class="font-mono text-2xl font-bold mt-12 mb-6">Why the generics pattern matters</h2>
+
+        <p>
+          The comptime system enables a generics mechanism with no new language features. A comptime function takes a type name as a string and prints a type-specialized ARIA function:
+        </p>
+
+        <pre><code>(comptime
+  (func $gen_max (param $T (ptr i8)) (effects io)
+    (print "(func $max_%s (param $a %s) (param $b %s) (result %s) (effects pure)\n" $T $T $T $T)
+    (print "  (if (gt.%s $a $b) (then (return $a)) (else (return $b))))\n" $T))
+
+  (func $main (result i32) (effects io)
+    (call $gen_max "i32")
+    (call $gen_max "f64")
+    (return 0)))</code></pre>
+
+        <p>
+          The compiler runs this, captures <code>$max_i32</code> and <code>$max_f64</code> as fully specialized functions, and compiles them normally. No parametric polymorphism in the IR. No type parameters. No trait resolution. No runtime dispatch. The AI writes a generator once. The compiler produces all the specializations. The type checker verifies each one. The output is the same code you would write by hand for each type.
+        </p>
+
+        <p>
+          This is the thesis in action. The IR stays minimal. The pipeline handles the complexity. The AI does not need language features designed for human convenience. It needs a compilation model that turns its output into correct, specialized code. Comptime is that model.
+        </p>
+
+        <h2 class="font-mono text-2xl font-bold mt-12 mb-6">What this means for the project</h2>
+
+        <p>
+          ARIA now compiles to two backend targets. The same source produces native binaries via gcc and WASM binaries via wat2wasm. The comptime system means the IR can stay simple while supporting patterns that traditionally require generics, templates, or macros in the language specification.
+        </p>
+
+        <p>
+          The <a href="/contributing" class="text-accent hover:underline">contributing</a> page has the updated roadmap. The <a href="/docs" class="text-accent hover:underline">documentation</a> covers the comptime API. The <a href="/get-started" class="text-accent hover:underline">get started</a> guide now includes WASM instructions.
+        </p>
+      </div>
+    </div>
+  </article>
+</Base>

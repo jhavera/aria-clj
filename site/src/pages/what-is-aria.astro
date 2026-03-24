@@ -79,8 +79,38 @@ import Pipeline from '../components/Pipeline.astro';
           <div class="text-muted ml-8">&darr;</div>
           <div class="ml-4"><span class="text-text">Compiler Backend</span> <span class="text-muted">(Layer 3)</span></div>
           <div class="ml-8 text-muted">ARIA-C &rarr; gcc &rarr; native binary</div>
+          <div class="ml-8 text-muted">ARIA-WAT &rarr; wat2wasm &rarr; WASM (WASI)</div>
           <div class="text-muted ml-8">&darr;</div>
           <div class="ml-4"><span class="text-text">Intent Verification</span> <span class="text-muted">(Layer 4)</span></div>
+        </div>
+      </section>
+
+      <!-- Comptime: The Pipeline Doing Its Job -->
+      <section class="mb-16">
+        <h2 class="font-mono text-2xl font-bold mb-6">Generics Without Generics</h2>
+        <div class="space-y-4 text-text/90 leading-relaxed">
+          <p>
+            ARIA has no parametric polymorphism. No templates. No trait system. It does not need one.
+          </p>
+          <p>
+            A <code>comptime</code> block executes at compile time. The AI generates a function that takes a type name as a string and prints a type-specialized ARIA function. The compiler runs it, captures the output, splices the generated functions back into the module, and compiles them. The result is monomorphized code with zero runtime overhead.
+          </p>
+          <pre><code><span class="text-muted">;; The AI generates this once</span>
+(comptime
+  (func $gen_max (param $T (ptr i8)) (effects io)
+    (print "(func $max_%s (param $a %s) (param $b %s) (result %s) (effects pure)\n" $T $T $T $T)
+    (print "  (if (gt.%s $a $b) (then (return $a)) (else (return $b))))\n" $T))
+
+  (func $main (result i32) (effects io)
+    (call $gen_max "i32")
+    (call $gen_max "f64")
+    (return 0)))</code></pre>
+          <p>
+            This is the pipeline doing its job. The AI writes a comptime generator once. The compiler produces <code>$max_i32</code> and <code>$max_f64</code> as fully specialized functions. No generics in the IR. No type erasure. No runtime dispatch. The two-pass model handles it: compile the comptime block via the C backend, execute it, parse the output as ARIA forms, splice them in, compile the whole module.
+          </p>
+          <p>
+            This pattern scales. Identity functions, clamp functions, arithmetic wrappers, lookup tables. Any function shape the AI can describe as a printf template becomes a family of type-specialized implementations. The IR stays simple. The compiler stays simple. The output is the same code a human would write by hand for each type.
+          </p>
         </div>
       </section>
 
