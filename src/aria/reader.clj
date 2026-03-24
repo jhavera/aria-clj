@@ -111,6 +111,20 @@
     (binding [*read-eval* false]
       (read-string preprocessed))))
 
+(defn read-all-aria
+  "Read all top-level s-expressions from ARIA source string.
+   Returns a vector of raw forms. Used for parsing comptime output
+   which may contain multiple top-level definitions."
+  [source]
+  (let [preprocessed (preprocess source)]
+    (binding [*read-eval* false]
+      (let [rdr (java.io.PushbackReader. (java.io.StringReader. preprocessed))]
+        (loop [forms []]
+          (let [form (read rdr false ::eof)]
+            (if (= form ::eof)
+              forms
+              (recur (conj forms form)))))))))
+
 (defn read-aria-file
   "Read an ARIA-IR source file."
   [path]

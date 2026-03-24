@@ -1,0 +1,63 @@
+; ═══════════════════════════════════════════════════════════
+; ARIA Example: Generics via Comptime (Zig-like model)
+; Demonstrates: type-parameterized code generation at compile time
+;
+; The comptime block defines generator functions that take type
+; names as strings and emit specialized functions. This IS the
+; generics mechanism — no templates, no special syntax, just
+; comptime functions printing ARIA code. Like Zig.
+; ═══════════════════════════════════════════════════════════
+
+(module "comptime_generics"
+
+  ;; ── Compile-time code generators ─────────────────────────
+  (comptime
+    ;; Generate a typed "identity" function for any type
+    (func $gen_identity (param $T (ptr i8)) (effects io)
+      (print "(func $identity_%s (param $x %s) (result %s) (effects pure)\n" $T $T $T)
+      (print "  (return $x))\n"))
+
+    ;; Generate a typed "max" function for integer types
+    (func $gen_max (param $T (ptr i8)) (effects io)
+      (print "(func $max_%s (param $a %s) (param $b %s) (result %s) (effects pure)\n" $T $T $T $T)
+      (print "  (if (gt.%s $a $b) (then (return $a)) (else (return $b))))\n" $T))
+
+    ;; Generate a typed "clamp" function using the generated max
+    (func $gen_clamp (param $T (ptr i8)) (effects io)
+      (print "(func $clamp_%s (param $val %s) (param $lo %s) (param $hi %s) (result %s) (effects pure)\n" $T $T $T $T $T)
+      (print "  (if (lt.%s $val $lo) (then (return $lo))\n" $T)
+      (print "    (else (if (gt.%s $val $hi) (then (return $hi))\n" $T)
+      (print "      (else (return $val))))))\n"))
+
+    ;; Generate a typed "swap and sum" function
+    (func $gen_add (param $T (ptr i8)) (effects io)
+      (print "(func $add_%s (param $a %s) (param $b %s) (result %s) (effects pure)\n" $T $T $T $T)
+      (print "  (return (add.%s $a $b)))\n" $T))
+
+    ;; Main: instantiate for i32 and f64
+    (func $main (result i32) (effects io)
+      ;; Instantiate for i32
+      (call $gen_identity "i32")
+      (call $gen_max "i32")
+      (call $gen_clamp "i32")
+      (call $gen_add "i32")
+      ;; Instantiate for f64 (only identity and add)
+      (call $gen_identity "f64")
+      (call $gen_add "f64")
+      (return 0)))
+
+  ;; ── Runtime code (uses the generated generic functions) ──
+  (func $main (result i32) (effects io)
+    ;; i32 generics
+    (print "identity_i32(42) = %d\n" (call $identity_i32 42))
+    (print "max_i32(10, 20) = %d\n" (call $max_i32 10 20))
+    (print "clamp_i32(100, 0, 50) = %d\n" (call $clamp_i32 100 0 50))
+    (print "clamp_i32(-5, 0, 50) = %d\n" (call $clamp_i32 -5 0 50))
+    (print "clamp_i32(25, 0, 50) = %d\n" (call $clamp_i32 25 0 50))
+    (print "add_i32(15, 27) = %d\n" (call $add_i32 15 27))
+
+    ;; f64 generics
+    (print "identity_f64(3.14) = %.2f\n" (call $identity_f64 3.14))
+    (print "add_f64(1.5, 2.5) = %.1f\n" (call $add_f64 1.5 2.5))
+
+    (return 0)))

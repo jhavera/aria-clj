@@ -269,6 +269,11 @@
   ;; Register function signatures
   (doseq [func (:functions module)]
     (swap! (:functions checker) assoc (:name func) func))
+  ;; Register extern function signatures (callable but not checked)
+  (doseq [ext (or (:externs module) [])]
+    (swap! (:functions checker) assoc (:name ext)
+           {:name (:name ext) :params (:params ext) :result (:result ext)
+            :effects #{:io :mem}}))
   ;; Check each function
   (doseq [func (:functions module)]
     (check-function checker func)))

@@ -324,6 +324,31 @@
     (ast/export-node (reader/var-name var-sym)
                      (first rest-parts))))  ;; alias or nil
 
+(defn- parse-extern
+  "Parse (extern \"module\" $name (param ...) ... (result Type)?).
+   Extern functions have no body or effects — they are host-provided."
+  [form]
+  (let [[_ module-name func-name & parts] form
+        func-name-str (reader/var-name func-name)]
+    (loop [parts parts
+           params []
+           result nil]
+      (if (empty? parts)
+        (ast/extern-func func-name-str params result module-name)
+        (let [part (first parts)]
+          (if (seq? part)
+            (let [kw (sym-name (first part))]
+              (case kw
+                "param"  (recur (rest parts)
+                                (conj params (parse-param part))
+                                result)
+                "result" (recur (rest parts)
+                                params
+                                (parse-type (second part)))
+                ;; skip unknown
+                (recur (rest parts) params result)))
+            (recur (rest parts) params result)))))))
+
 (defn parse-module
   "Parse a complete ARIA module from a raw s-expression form."
   [form]
@@ -336,21 +361,24 @@
            types []
            globals []
            functions []
-           exports []]
+           exports []
+           externs []]
       (if (empty? forms)
-        (ast/module module-name types globals functions exports)
+        (ast/module module-name types globals functions exports externs)
         (let [f (first forms)
               kw (when (seq? f) (sym-name (first f)))]
           (case kw
             "func"     (recur (rest forms) types globals
-                              (conj functions (parse-function f)) exports)
+                              (conj functions (parse-function f)) exports externs)
             "global"   (recur (rest forms) types
-                              (conj globals (parse-global f)) functions exports)
+                              (conj globals (parse-global f)) functions exports externs)
             "type"     (recur (rest forms)
-                              (conj types (parse-typedef f)) globals functions exports)
+                              (conj types (parse-typedef f)) globals functions exports externs)
             "export"   (recur (rest forms) types globals functions
-                              (conj exports (parse-export f)))
-            "metadata" (recur (rest forms) types globals functions exports) ;; skip
+                              (conj exports (parse-export f)) externs)
+            "extern"   (recur (rest forms) types globals functions exports
+                              (conj externs (parse-extern f)))
+            "metadata" (recur (rest forms) types globals functions exports externs) ;; skip
             (parse-error (str "Unknown top-level form: " kw) f)))))))
 
 ;; ── Convenience ───────────────────────────────────────────────

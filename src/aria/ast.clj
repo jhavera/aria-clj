@@ -140,10 +140,21 @@
 (defn export-node [name alias]
   {:node/type :export :name name :alias alias})
 
-(defn module [name types globals functions exports]
-  {:node/type :module
+(defn extern-func [name params result module-name]
+  {:node/type :extern
    :name name
-   :types types
-   :globals globals
-   :functions functions
-   :exports exports})
+   :params params
+   :result result
+   :extern/module module-name})
+
+(defn module
+  ([name types globals functions exports]
+   (module name types globals functions exports []))
+  ([name types globals functions exports externs]
+   {:node/type :module
+    :name name
+    :types types
+    :globals globals
+    :functions functions
+    :exports exports
+    :externs externs}))

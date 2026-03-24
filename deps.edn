@@ -9,4 +9,5 @@
          :main-opts   ["-m" "cognitect.test-runner"]
          :exec-fn     cognitect.test-runner.api/test}
   :run  {:main-opts ["-m" "aria.main"]}
-  :gen  {:main-opts ["-m" "aria.gen"]}}}
+  :gen  {:main-opts ["-m" "aria.gen"]}
+  :wasm {:main-opts ["-m" "aria.main" "--backend" "wasm"]}}}
