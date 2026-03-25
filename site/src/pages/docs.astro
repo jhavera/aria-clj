@@ -211,6 +211,49 @@ import Base from '../layouts/Base.astro';
         </p>
       </section>
 
+      <!-- C Backend Effect Attributes -->
+      <section class="mb-12">
+        <h2 class="font-mono text-2xl font-bold mb-4">C Backend: Effect Attributes</h2>
+        <p class="text-text/90 leading-relaxed mb-4">
+          Effect declarations in ARIA-IR are not just documentation. The C backend translates them into GCC/Clang function attributes that enable real compiler optimizations at <code>-O2</code>. This means the effect system does optimization work in the compiled output, not just in the ARIA type checker.
+        </p>
+
+        <div class="space-y-3 text-sm mb-6">
+          <div class="bg-surface border border-border rounded-lg p-4 flex items-start gap-4">
+            <code class="text-[#7ee787] font-bold flex-shrink-0">pure</code>
+            <div class="text-muted">
+              Functions with no pointer parameters emit <code>__attribute__((const))</code>. The return value depends only on the arguments. GCC/Clang can deduplicate calls and eliminate dead calls.
+            </div>
+          </div>
+          <div class="bg-surface border border-border rounded-lg p-4 flex items-start gap-4">
+            <code class="text-[#7ee787] font-bold flex-shrink-0">pure + ptrs</code>
+            <div class="text-muted">
+              Functions with pointer parameters emit <code>__attribute__((pure))</code>. The return value depends on arguments and global state but has no side effects. GCC/Clang can still eliminate redundant calls.
+            </div>
+          </div>
+          <div class="bg-surface border border-border rounded-lg p-4 flex items-start gap-4">
+            <code class="text-[#ffa657] font-bold flex-shrink-0">mem</code>
+            <div class="text-muted">
+              Functions returning a pointer emit <code>__attribute__((malloc))</code>. Tells GCC/Clang the returned pointer does not alias any existing pointer, enabling better alias analysis.
+            </div>
+          </div>
+        </div>
+
+        <p class="text-text/90 leading-relaxed mb-4">
+          These attributes are GCC and Clang specific. They are ignored by MSVC. The WAT backend preserves effects as <code>;;effects:</code> comments before each function definition, since WASM has no native effect system.
+        </p>
+
+        <pre><code set:html={`;; ARIA-IR
+(func $add (param $x i32) (param $y i32) (result i32) (effects pure)
+  (return (add.i32 $x $y)))
+
+// Generated C
+__attribute__((const))
+int32_t add(int32_t x, int32_t y) {
+    return x + y;
+}`} /></pre>
+      </section>
+
       <!-- Examples -->
       <section>
         <h2 class="font-mono text-2xl font-bold mb-4">Example Programs</h2>

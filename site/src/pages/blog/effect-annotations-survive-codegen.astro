@@ -1,0 +1,37 @@
+---
+import Base from '../../layouts/Base.astro';
+---
+<Base title="Effect Annotations Now Survive Codegen - ARIA Blog">
+  <article class="py-16 px-4">
+    <div class="max-w-3xl mx-auto">
+      <a href="/blog" class="text-sm text-muted hover:text-accent transition-colors">&larr; Back to Blog</a>
+
+      <header class="mt-6 mb-12">
+        <h1 class="font-mono text-3xl md:text-4xl font-bold mb-4">Effect Annotations Now Survive Codegen</h1>
+        <div class="flex items-center gap-3 text-sm text-muted">
+          <time datetime="2026-03-24">March 24, 2026</time>
+          <span>&middot;</span>
+          <span>John Avera</span>
+        </div>
+      </header>
+
+      <div class="space-y-6 text-text/90 leading-relaxed">
+        <p>
+          Until now, ARIA's effect system had a gap. You could declare <code>(effects pure)</code> on a function, and the type checker would verify it, but the generated C and WAT output threw that information away. The compiled code had no trace of the effect annotations the AI wrote and the checker verified. <a href="https://github.com/arkaitz-dev" target="_blank" rel="noopener" class="text-accent hover:underline">@arkaitz-dev</a> closed this gap in <a href="https://github.com/jhavera/aria-clj/pull/7" target="_blank" rel="noopener" class="text-accent hover:underline">PR #7</a>.
+        </p>
+
+        <p>
+          The C backend now maps effect declarations to GCC and Clang function attributes. A <code>pure</code> function with no pointer parameters emits <code>__attribute__((const))</code>. A <code>pure</code> function with pointer parameters emits <code>__attribute__((pure))</code>. A <code>mem</code> function returning a pointer emits <code>__attribute__((malloc))</code>. These are not decorative. At <code>-O2</code>, GCC and Clang use them for call deduplication, dead call elimination, and alias analysis. The WAT backend preserves effects as <code>;;effects:</code> comments before each function, since WASM has no native attribute system.
+        </p>
+
+        <p>
+          This matters because it makes the effect system end to end. An AI declares effects in the IR. The type checker verifies them. The C backend encodes them as compiler hints that produce faster binaries. The information flows from intent through verification into optimization. Nothing is lost at the boundary between ARIA and the host compiler.
+        </p>
+
+        <p>
+          The thesis says AI-optimized IRs should carry semantic information that survives compilation. Effects are the first case where ARIA does this in a way that produces measurable results in the compiled output. The effect system is no longer just a correctness check. It is an optimization pipeline.
+        </p>
+      </div>
+    </div>
+  </article>
+</Base>
