@@ -184,4 +184,4 @@ The compiler CLI (`src/aria/main.clj`) orchestrates the pipeline and optionally 
 
 ## License
 
-MIT
+Apache-2.0
