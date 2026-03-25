@@ -255,29 +255,6 @@
       (let [cond-expr (expr->c cg (:cond node))]
         (emit! cg (str "if (" cond-expr ") break; /* br_if " (:label node) " */"))))
 
-    :switch
-    (let [expr-c (expr->c cg (:expr node))
-          cases (:cases node)]
-      (doseq [[i c] (map-indexed vector cases)]
-        (let [val-c (expr->c cg (:case/value c))
-              ;; Use strcmp for string literals, == for integers
-              cond-str (if (= :string-literal (:node/type (:case/value c)))
-                         (str "strcmp((const char*)" expr-c ", (const char*)" val-c ") == 0")
-                         (str expr-c " == " val-c))
-              prefix (if (zero? i) "if" "} else if")]
-          (emit! cg (str prefix " (" cond-str ") {"))
-          (swap! (:indent cg) inc)
-          (doseq [n (:case/body c)]
-            (gen-stmt! cg n))
-          (swap! (:indent cg) dec)))
-      (when (:default-body node)
-        (emit! cg "} else {")
-        (swap! (:indent cg) inc)
-        (doseq [n (:default-body node)]
-          (gen-stmt! cg n))
-        (swap! (:indent cg) dec))
-      (emit! cg "}"))
-
     :seq
     (doseq [n (:body node)]
       (gen-stmt! cg n))

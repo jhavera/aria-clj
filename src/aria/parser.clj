@@ -229,23 +229,6 @@
                            (ast/int-literal 0))
                          mutable?))
 
-      ;; Switch: (switch expr (case value body...) ... (default body...))
-      (= base-op "switch")
-      (let [[expr-form & clauses] args
-            expr (parse-expr expr-form)
-            cases (atom [])
-            default (atom nil)]
-        (doseq [clause clauses]
-          (let [kw (sym-name (first clause))]
-            (case kw
-              "case" (let [[_ val-form & body-forms] clause]
-                       (swap! cases conj
-                              (ast/switch-case (parse-expr val-form)
-                                               (parse-expr-list body-forms))))
-              "default" (reset! default (parse-expr-list (rest clause)))
-              (parse-error (str "Expected case or default in switch, got: " kw) clause))))
-        (ast/switch-node expr @cases @default))
-
       ;; Seq: (seq body...)
       (= base-op "seq")
       (ast/seq-node (parse-expr-list args))

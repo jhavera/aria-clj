@@ -270,12 +270,15 @@
                 (then
                   (set $p (add.i32 $p 1))
                   (let %esc i32 (call $char_at $src $p))
-                  (switch %esc
-                    (case 110 (store.u8 (add.i32 %buf $bi) 10))
-                    (case 116 (store.u8 (add.i32 %buf $bi) 9))
-                    (case 92  (store.u8 (add.i32 %buf $bi) 92))
-                    (case 34  (store.u8 (add.i32 %buf $bi) 34))
-                    (default  (store.u8 (add.i32 %buf $bi) %esc)))
+                  (if (eq.i32 %esc 110)
+                    (then (store.u8 (add.i32 %buf $bi) 10))
+                    (else (if (eq.i32 %esc 116)
+                      (then (store.u8 (add.i32 %buf $bi) 9))
+                      (else (if (eq.i32 %esc 92)
+                        (then (store.u8 (add.i32 %buf $bi) 92))
+                        (else (if (eq.i32 %esc 34)
+                          (then (store.u8 (add.i32 %buf $bi) 34))
+                          (else (store.u8 (add.i32 %buf $bi) %esc)))))))))
                   (set $bi (add.i32 $bi 1))
                   (set $p (add.i32 $p 1)))
                 (else
@@ -407,24 +410,27 @@
     (effects io mem div)
     (let %node (ptr $SExp) (call $node_at $idx))
     (let %tag i32 (load.field %node "tag"))
-    (switch %tag
-      (case 0 (print "%ld" (load.field %node "int_val")))
-      (case 2 (print "\"%s\"" (load.field %node "str_val")))
-      (case 3 (print "%s" (load.field %node "str_val")))
-      (case 4
-        (print "(")
-        (let %count i32 (load.field %node "count"))
-        (let %children (ptr i32) (load.field %node "children"))
-        (local mut $i i32 0)
-        (loop $pr
-          (if (ge.i32 $i %count)
-            (then (br $pr))
-            (else
-              (if (gt.i32 $i 0) (then (print " ")) (else))
-              (call $print_sexp (load.i32 (add.i32 %children $i)))
-              (set $i (add.i32 $i 1)))))
-        (print ")"))
-      (default (print "<?>"))))
+    (if (eq.i32 %tag 0)
+      (then (print "%ld" (load.field %node "int_val")))
+      (else (if (eq.i32 %tag 2)
+        (then (print "\"%s\"" (load.field %node "str_val")))
+        (else (if (eq.i32 %tag 3)
+          (then (print "%s" (load.field %node "str_val")))
+          (else (if (eq.i32 %tag 4)
+            (then
+              (print "(")
+              (let %count i32 (load.field %node "count"))
+              (let %children (ptr i32) (load.field %node "children"))
+              (local mut $i i32 0)
+              (loop $pr
+                (if (ge.i32 $i %count)
+                  (then (br $pr))
+                  (else
+                    (if (gt.i32 $i 0) (then (print " ")) (else))
+                    (call $print_sexp (load.i32 (add.i32 %children $i)))
+                    (set $i (add.i32 $i 1)))))
+              (print ")"))
+            (else (print "<?>"))))))))))
 
   ;; ── Main: test the reader ─────────────────────────────────
 

@@ -209,15 +209,6 @@
           (check-node checker arg env effects))
         nil)
 
-    :switch
-    (do (check-node checker (:expr node) env effects)
-        (doseq [c (:cases node)]
-          (check-node checker (:case/value c) env effects)
-          (check-body checker (:case/body c) (child-env env) effects))
-        (when (:default-body node)
-          (check-body checker (:default-body node) (child-env env) effects))
-        nil)
-
     :intent
     nil
 

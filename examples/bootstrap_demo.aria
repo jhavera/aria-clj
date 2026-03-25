@@ -1,6 +1,6 @@
 ; ═══════════════════════════════════════════════════════════
 ; ARIA Example: Bootstrap Demo
-; Demonstrates: strings as (ptr u8), switch, externs, file I/O
+; Demonstrates: strings as (ptr u8), externs, file I/O
 ; These are the language features needed for self-hosting
 ; ═══════════════════════════════════════════════════════════
 
@@ -17,26 +17,25 @@
   (extern "io" $file_read_all
     (param $path (ptr u8)) (result (ptr u8)))
 
-  ;; Classify a token keyword using switch on strings
+  ;; Classify a token keyword using string comparison
   (func $classify_token
     (param $tok (ptr u8))
     (result i32)
     (effects io)
     (intent "Return a tag integer for known ARIA keywords")
-    (switch $tok
-      (case "module" (return 1))
-      (case "func"   (return 2))
-      (case "let"    (return 3))
-      (case "if"     (return 4))
-      (case "loop"   (return 5))
-      (case "print"  (return 6))
-      (case "return" (return 7))
-      (default       (return 0))))
+    (if (call $str_eq $tok "module") (then (return 1)) (else))
+    (if (call $str_eq $tok "func")   (then (return 2)) (else))
+    (if (call $str_eq $tok "let")    (then (return 3)) (else))
+    (if (call $str_eq $tok "if")     (then (return 4)) (else))
+    (if (call $str_eq $tok "loop")   (then (return 5)) (else))
+    (if (call $str_eq $tok "print")  (then (return 6)) (else))
+    (if (call $str_eq $tok "return") (then (return 7)) (else))
+    (return 0))
 
   (func $main
     (result i32)
     (effects io mem)
-    (intent "Demo bootstrap features: strings, switch, externs")
+    (intent "Demo bootstrap features: strings, externs, file I/O")
 
     ;; String values
     (let %greeting (ptr u8) "ARIA Bootstrap Demo")
