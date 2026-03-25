@@ -236,3 +236,34 @@
       (is (str/includes? wat "(memory (export \"memory\") 1)"))
       ;; Should close properly
       (is (str/ends-with? (str/trim wat) ")")))))
+
+;; ── Effect Annotation Tests ────────────────────────────────
+
+(deftest effects-comment-test
+  (testing "Single effect emitted as WAT comment"
+    (let [wat (gen-wat "(module \"t\"
+                          (func $f (result i32) (effects pure) (return 42))
+                          (export $f))")]
+      (is (str/includes? wat ";; effects: pure"))))
+
+  (testing "Multiple effects emitted sorted"
+    (let [wat (gen-wat "(module \"t\"
+                          (func $f (param $arr (ptr i32)) (param $n i32)
+                            (effects io mem div)
+                            (intent \"test\")
+                            (print \"%d\" $n))
+                          (export $f))")]
+      (is (str/includes? wat ";; effects: div io mem"))))
+
+  (testing "Effects comment appears before intent comment"
+    (let [wat (gen-wat "(module \"t\"
+                          (func $f (result i32)
+                            (effects pure)
+                            (intent \"Compute something\")
+                            (return 1))
+                          (export $f))")
+          effects-idx (str/index-of wat ";; effects:")
+          intent-idx (str/index-of wat ";; Compute something")]
+      (is (some? effects-idx))
+      (is (some? intent-idx))
+      (is (< effects-idx intent-idx)))))

@@ -839,6 +839,10 @@
         param-names (set (map #(var->wat (:param/name %)) params))
         func-locals (into (sorted-map) (remove (fn [[k _]] (param-names k)) locals))]
 
+    ;; Effects as comment
+    (when (seq (:effects func))
+      (emit! cg (str ";; effects: " (str/join " " (sort (map name (:effects func)))))))
+
     ;; Intent as comment
     (when (:intent func)
       (emit! cg (str ";; " (:intent func))))

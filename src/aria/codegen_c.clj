@@ -277,10 +277,45 @@
   (emit-raw! cg (str "} " name ";"))
   (emit-raw! cg ""))
 
+(defn- has-ptr-param? [func]
+  (some #(= :ptr (:type/kind (:param/type %))) (:params func)))
+
+(defn- returns-ptr? [func]
+  (= :ptr (:type/kind (:result func))))
+
+(defn- effects->c-attr
+  "Map ARIA effect set to a C compiler attribute string, or nil."
+  [func]
+  (let [effs (set (:effects func))]
+    (cond
+      ;; pure + no pointer params = truly const (no memory reads)
+      (and (contains? effs :pure) (not (has-ptr-param? func)))
+      "__attribute__((const)) "
+
+      ;; pure + pointer params = reads memory but no side effects
+      (and (contains? effs :pure) (has-ptr-param? func))
+      "__attribute__((pure)) "
+
+      ;; mem + returns pointer = malloc-like
+      (and (contains? effs :mem) (returns-ptr? func))
+      "__attribute__((malloc)) "
+
+      :else nil)))
+
+(defn- effects->c-comment
+  "Emit an effects comment for non-attribute cases, or nil."
+  [func]
+  (when (seq (:effects func))
+    (let [effs (sort (map name (:effects func)))]
+      (str "/* effects: " (str/join " " effs) " */"))))
+
 (defn- gen-function! [cg func]
   ;; Intent as doc comment
   (when (:intent func)
     (emit-raw! cg (str "/* " (:intent func) " */")))
+  ;; Effects comment (always emitted when effects present)
+  (when-let [comment (effects->c-comment func)]
+    (emit-raw! cg comment))
   ;; Signature
   (let [ret-type (if (:result func) (type->c (:result func)) "void")
         params (if (seq (:params func))
@@ -290,8 +325,9 @@
                                        (var->c (:param/name p))))
                                 (:params func)))
                  "void")
-        fname (var->c (:name func))]
-    (emit-raw! cg (str ret-type " " fname "(" params ") {"))
+        fname (var->c (:name func))
+        attr (or (effects->c-attr func) "")]
+    (emit-raw! cg (str attr ret-type " " fname "(" params ") {"))
     (swap! (:indent cg) inc)
     ;; Body (locals are now let-bindings in body, handled by gen-stmt!)
     (doseq [node (:body func)]
@@ -333,8 +369,9 @@
                                            (var->c (:param/name p))))
                                     (:params func)))
                      "void")
-            fname (var->c (:name func))]
-        (emit-raw! cg (str ret-type " " fname "(" params ");"))))
+            fname (var->c (:name func))
+            attr (or (effects->c-attr func) "")]
+        (emit-raw! cg (str attr ret-type " " fname "(" params ");"))))
     (emit-raw! cg "")
 
     ;; Globals
