@@ -1,0 +1,77 @@
+; ═══════════════════════════════════════════════════════════
+; ARIA Example: Bootstrap Demo
+; Demonstrates: strings as (ptr u8), switch, externs, file I/O
+; These are the language features needed for self-hosting
+; ═══════════════════════════════════════════════════════════
+
+(module "bootstrap_demo"
+
+  ;; Extern declarations for system interaction
+  (extern "sys" $args_count (result i32))
+  (extern "sys" $args_get (param $i i32) (result (ptr u8)))
+  (extern "sys" $trap (param $msg (ptr u8)))
+  (extern "sys" $str_eq
+    (param $a (ptr u8)) (param $b (ptr u8)) (result i32))
+  (extern "sys" $str_len
+    (param $s (ptr u8)) (result i32))
+  (extern "io" $file_read_all
+    (param $path (ptr u8)) (result (ptr u8)))
+
+  ;; Classify a token keyword using switch on strings
+  (func $classify_token
+    (param $tok (ptr u8))
+    (result i32)
+    (effects io)
+    (intent "Return a tag integer for known ARIA keywords")
+    (switch $tok
+      (case "module" (return 1))
+      (case "func"   (return 2))
+      (case "let"    (return 3))
+      (case "if"     (return 4))
+      (case "loop"   (return 5))
+      (case "print"  (return 6))
+      (case "return" (return 7))
+      (default       (return 0))))
+
+  (func $main
+    (result i32)
+    (effects io mem)
+    (intent "Demo bootstrap features: strings, switch, externs")
+
+    ;; String values
+    (let %greeting (ptr u8) "ARIA Bootstrap Demo")
+    (print "%s\n" %greeting)
+    (print "greeting length: %d\n" (call $str_len %greeting))
+
+    ;; Switch on strings — simulates a lexer/parser dispatch
+    (print "\nToken classification:\n")
+    (let %tokens_0 (ptr u8) "module")
+    (let %tokens_1 (ptr u8) "func")
+    (let %tokens_2 (ptr u8) "let")
+    (let %tokens_3 (ptr u8) "unknown")
+    (print "  '%s' -> tag %d\n" %tokens_0 (call $classify_token %tokens_0))
+    (print "  '%s' -> tag %d\n" %tokens_1 (call $classify_token %tokens_1))
+    (print "  '%s' -> tag %d\n" %tokens_2 (call $classify_token %tokens_2))
+    (print "  '%s' -> tag %d\n" %tokens_3 (call $classify_token %tokens_3))
+
+    ;; String comparison
+    (print "\nString equality:\n")
+    (print "  'func' == 'func': %d\n" (call $str_eq %tokens_1 %tokens_1))
+    (print "  'func' == 'let':  %d\n" (call $str_eq %tokens_1 %tokens_2))
+
+    ;; CLI args
+    (let %argc i32 (call $args_count))
+    (print "\nCLI args: %d\n" %argc)
+    (if (gt.i32 %argc 1)
+      (then
+        (let %path (ptr u8) (call $args_get 1))
+        (print "Reading file: %s\n" %path)
+        (let %content (ptr u8) (call $file_read_all %path))
+        (print "Content length: %d\n" (call $str_len %content))
+        (print "First 50 chars:\n%s\n" %content))
+      (else
+        (print "(no file argument given)\n")))
+
+    (return 0))
+
+  (export $main))

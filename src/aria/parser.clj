@@ -64,8 +64,12 @@
         "struct" (let [sname (if (string? (second form)) (second form) "")
                        fields-start (if (string? (second form)) 2 1)
                        fields (mapv (fn [f]
-                                      [(sym-name (first f))
-                                       (parse-type (second f))])
+                                      ;; Support both formats:
+                                      ;; (field $name Type) — new explicit form
+                                      ;; ($name Type)       — short form
+                                      (if (= "field" (sym-name (first f)))
+                                        [(sym-name (second f)) (parse-type (nth f 2))]
+                                        [(sym-name (first f)) (parse-type (second f))]))
                                     (drop fields-start form))]
                    (ast/struct-type sname fields))
         "func"   (let [param-types (mapv parse-type (second form))
@@ -224,6 +228,23 @@
                            (parse-expr (first init-forms))
                            (ast/int-literal 0))
                          mutable?))
+
+      ;; Switch: (switch expr (case value body...) ... (default body...))
+      (= base-op "switch")
+      (let [[expr-form & clauses] args
+            expr (parse-expr expr-form)
+            cases (atom [])
+            default (atom nil)]
+        (doseq [clause clauses]
+          (let [kw (sym-name (first clause))]
+            (case kw
+              "case" (let [[_ val-form & body-forms] clause]
+                       (swap! cases conj
+                              (ast/switch-case (parse-expr val-form)
+                                               (parse-expr-list body-forms))))
+              "default" (reset! default (parse-expr-list (rest clause)))
+              (parse-error (str "Expected case or default in switch, got: " kw) clause))))
+        (ast/switch-node expr @cases @default))
 
       ;; Seq: (seq body...)
       (= base-op "seq")

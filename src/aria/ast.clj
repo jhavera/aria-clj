@@ -111,6 +111,12 @@
 (defn seq-node [body]
   {:node/type :seq :body body})
 
+(defn switch-node [expr cases default-body]
+  {:node/type :switch :expr expr :cases cases :default-body default-body})
+
+(defn switch-case [value body]
+  {:case/value value :case/body body})
+
 (defn intent-node [description]
   {:node/type :intent :description description})
 

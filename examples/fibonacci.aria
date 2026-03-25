@@ -47,7 +47,7 @@
 
   (func $main
     (result i32)
-    (effects io)
+    (effects io div)
     (intent "Print first 10 Fibonacci numbers to demonstrate both implementations")
 
     (print "Fibonacci (recursive):\n")
