@@ -1,5 +1,6 @@
 (ns aria.codegen-jvm-test
   (:require [clojure.test :refer [deftest is are testing]]
+            [clojure.string :as str]
             [aria.ast :as ast]
             [aria.codegen-jvm :as codegen-jvm]))
 
@@ -47,6 +48,18 @@
             (ast/var-ref "$a")
             (ast/var-ref "$b")))])]
     [(ast/export-node "$add" nil)]))
+
+(defn- intent-ast-fixture
+  "A module with a function that has an intent annotation."
+  []
+  (ast/module "intenttest" [] []
+    [(ast/function "$greet"
+       []
+       (ast/primitive "i32")
+       #{:pure}
+       "Greet a user"
+       [(ast/return-node (ast/int-literal 42))])]
+    [(ast/export-node "$greet" nil)]))
 
 ;; ── Test Group 2: Valid class file ──────────────────────────
 
@@ -101,3 +114,69 @@
     (let [bytes  (codegen-jvm/generate-class (minimal-ast-fixture) "MainTest")
           result (load-and-invoke bytes "MainTest" "main")]
       (is (= 0 result)))))
+
+;; ── Test Group 4: @Intent annotation class is valid ─────────
+
+(deftest intent-annotation-class-has-magic-bytes
+  (let [bytes (#'aria.codegen-jvm/generate-intent-annotation-class)]
+    (is (= (int 0xCA) (bit-and (aget bytes 0) 0xFF)))
+    (is (= (int 0xFE) (bit-and (aget bytes 1) 0xFF)))
+    (is (= (int 0xBA) (bit-and (aget bytes 2) 0xFF)))
+    (is (= (int 0xBE) (bit-and (aget bytes 3) 0xFF)))))
+
+(deftest intent-annotation-class-is-non-empty
+  (let [bytes (#'aria.codegen-jvm/generate-intent-annotation-class)]
+    (is (pos? (count bytes)))))
+
+;; ── Test Group 5: Intent annotation is emitted on methods ───
+
+(defn- write-class-file!
+  "Write a byte array as a .class file in the given directory."
+  [^java.io.File dir class-path ^bytes class-bytes]
+  (let [f (java.io.File. dir class-path)]
+    (.mkdirs (.getParentFile f))
+    (with-open [os (java.io.FileOutputStream. f)]
+      (.write os class-bytes))
+    f))
+
+(defn- load-with-intent-annotation
+  "Load both the @Intent annotation class and an ARIA-compiled class into
+  a URLClassLoader, returning the loaded ARIA class."
+  [aria-class-bytes aria-class-name]
+  (let [intent-bytes (#'aria.codegen-jvm/generate-intent-annotation-class)
+        tmp-dir (java.io.File/createTempFile "aria-intent-test" "")
+        _ (.delete tmp-dir)
+        _ (.mkdirs tmp-dir)]
+    (write-class-file! tmp-dir "com/ariacompiler/Intent.class" intent-bytes)
+    (write-class-file! tmp-dir (str aria-class-name ".class") aria-class-bytes)
+    (let [loader (java.net.URLClassLoader.
+                  (into-array java.net.URL [(.toURL (.toURI tmp-dir))]))]
+      (.loadClass loader aria-class-name))))
+
+(deftest intent-annotation-present-on-method
+  (let [ast   (intent-ast-fixture)
+        bytes (codegen-jvm/generate-class ast "IntentTest")
+        klass (load-with-intent-annotation bytes "IntentTest")
+        method (.getDeclaredMethod klass "greet" (into-array Class []))
+        anns  (.getDeclaredAnnotations method)]
+    (is (pos? (count anns)))
+    (is (some #(str/includes? (str %) "Greet a user") anns))))
+
+;; ── Test Group 6: emit-jar! produces a valid JAR ────────────
+
+(deftest emit-jar-produces-file
+  (let [ast      (minimal-ast-fixture)
+        tmp-dir  (str (System/getProperty "java.io.tmpdir") "/aria-jvm-test")
+        jar-file (codegen-jvm/emit-jar! ast tmp-dir)]
+    (is (.exists jar-file))
+    (is (str/ends-with? (.getName jar-file) ".jar"))
+    (is (pos? (.length jar-file)))))
+
+(deftest emit-jar-contains-class-and-annotation
+  (let [ast      (minimal-ast-fixture)
+        tmp-dir  (str (System/getProperty "java.io.tmpdir") "/aria-jvm-test2")
+        jar-file (codegen-jvm/emit-jar! ast tmp-dir)
+        entries  (with-open [jf (java.util.zip.ZipFile. jar-file)]
+                   (set (map #(.getName %) (enumeration-seq (.entries jf)))))]
+    (is (contains? entries "com/ariacompiler/Intent.class"))
+    (is (some #(str/ends-with? % ".class") entries))))

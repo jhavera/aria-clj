@@ -1,7 +1,7 @@
 (ns aria.codegen-jvm
   "JVM bytecode backend for ARIA-IR.
-  Compiles a validated AST (post-checker) to a .class file using ASM.
-  Entry points: generate-class and emit-class-file!"
+  Compiles a validated AST (post-checker) to .class files and runnable JARs
+  using ASM. Entry points: generate-class, emit-class-file!, and emit-jar!"
   (:require [clojure.string :as str])
   (:import [org.objectweb.asm ClassWriter MethodVisitor Opcodes Label]))
 
@@ -348,6 +348,54 @@
     ;; Pop the returned PrintStream
     (.visitInsn mv Opcodes/POP)))
 
+;; ── @Intent Annotation ──────────────────────────────────────
+
+(defn- generate-intent-annotation-class
+  "Generates the bytecode for the @com.ariacompiler.Intent annotation type.
+  Returns a byte array containing a valid .class file for the annotation.
+  This class must be present on the classpath or in the JAR for @Intent
+  to be queryable via reflection at runtime."
+  []
+  (let [cw (ClassWriter. 0)]
+    (.visit cw
+            Opcodes/V11
+            (+ Opcodes/ACC_PUBLIC Opcodes/ACC_ABSTRACT Opcodes/ACC_INTERFACE
+               Opcodes/ACC_ANNOTATION)
+            "com/ariacompiler/Intent"
+            nil
+            "java/lang/Object"
+            (into-array String ["java/lang/annotation/Annotation"]))
+    ;; @Retention(RUNTIME)
+    (let [av (.visitAnnotation cw
+                               "Ljava/lang/annotation/Retention;"
+                               true)]
+      (.visitEnum av "value"
+                  "Ljava/lang/annotation/RetentionPolicy;"
+                  "RUNTIME")
+      (.visitEnd av))
+    ;; @Target(METHOD)
+    (let [av (.visitAnnotation cw
+                               "Ljava/lang/annotation/Target;"
+                               true)
+          arr (.visitArray av "value")]
+      (.visitEnum arr nil
+                  "Ljava/lang/annotation/ElementType;"
+                  "METHOD")
+      (.visitEnd arr)
+      (.visitEnd av))
+    ;; value() element
+    (let [mv (.visitMethod cw (+ Opcodes/ACC_PUBLIC Opcodes/ACC_ABSTRACT)
+                           "value" "()Ljava/lang/String;" nil nil)]
+      (.visitEnd mv))
+    (.visitEnd cw)
+    (.toByteArray cw)))
+
+(defn- extract-intent
+  "Returns the intent string from a function, or nil if none declared.
+  The parser stores intent in the function's :intent key directly."
+  [func]
+  (:intent func))
+
 ;; ── Method Codegen ──────────────────────────────────────────
 
 (defn- emit-method!
@@ -366,9 +414,12 @@
         access (+ Opcodes/ACC_PUBLIC Opcodes/ACC_STATIC)
         mv (.visitMethod cw access fname desc nil nil)
         ctx (make-ctx class-name functions)]
-    ;; Store return type in ctx for use by return statements
-    ;; We use a simple atom approach since meta on map doesn't work well with atoms
     (.visitCode mv)
+    ;; Emit @Intent annotation if present
+    (when-let [intent-str (extract-intent func)]
+      (let [av (.visitAnnotation mv "Lcom/ariacompiler/Intent;" true)]
+        (.visit av "value" intent-str)
+        (.visitEnd av)))
     ;; Allocate parameter slots
     (doseq [p params]
       (let [type-kw (aria-type-map->kw (:param/type p))
@@ -450,3 +501,40 @@
       (.write os ^bytes bytes))
     (println (str "Wrote " (.getPath out-file) " (" (count bytes) " bytes)"))
     out-file))
+
+(defn emit-jar!
+  "Compiles an ARIA-IR AST to a runnable JAR file in output-dir.
+  The JAR includes:
+    - The compiled ARIA module as a .class file
+    - The com.ariacompiler.Intent annotation class
+    - A manifest with Main-Class set to the compiled class name
+  Returns the java.io.File written."
+  [ast output-dir]
+  (let [module-name (:name ast)
+        class-name  (str (Character/toUpperCase (first module-name))
+                         (subs module-name 1))
+        class-bytes  (generate-class ast class-name)
+        intent-bytes (generate-intent-annotation-class)
+        manifest     (doto (java.util.jar.Manifest.)
+                       (-> .getMainAttributes
+                           (doto
+                             (.put java.util.jar.Attributes$Name/MANIFEST_VERSION "1.0")
+                             (.put java.util.jar.Attributes$Name/MAIN_CLASS class-name))))
+        dir          (java.io.File. output-dir)
+        jar-file     (java.io.File. dir (str class-name ".jar"))]
+    (.mkdirs dir)
+    (with-open [jos (java.util.jar.JarOutputStream.
+                     (java.io.FileOutputStream. jar-file) manifest)]
+      ;; Write the annotation class
+      (.putNextEntry jos (java.util.jar.JarEntry.
+                          "com/ariacompiler/Intent.class"))
+      (.write jos ^bytes intent-bytes)
+      (.closeEntry jos)
+      ;; Write the compiled ARIA module class
+      (.putNextEntry jos (java.util.jar.JarEntry.
+                          (str class-name ".class")))
+      (.write jos ^bytes class-bytes)
+      (.closeEntry jos))
+    (println (str "Wrote " (.getPath jar-file)
+                  " (" (.length jar-file) " bytes)"))
+    jar-file))
