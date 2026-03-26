@@ -1,0 +1,35 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+
+      - name: Install Clojure
+        uses: DeLaGuardo/setup-clojure@13.1
+        with:
+          cli: latest
+
+      - name: Run tests
+        run: clojure -M:test
+
+      - name: Build uberjar
+        run: clj -T:build uber
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          files: target/aria-clj-*.jar

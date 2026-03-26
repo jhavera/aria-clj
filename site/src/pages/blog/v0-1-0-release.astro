@@ -1,0 +1,58 @@
+---
+import Base from '../../layouts/Base.astro';
+---
+<Base title="ARIA v0.1.0 - ARIA Blog">
+  <article class="py-16 px-4">
+    <div class="max-w-3xl mx-auto">
+      <a href="/blog" class="text-sm text-muted hover:text-accent transition-colors">&larr; Back to Blog</a>
+
+      <header class="mt-6 mb-12">
+        <h1 class="font-mono text-3xl md:text-4xl font-bold mb-4">ARIA v0.1.0</h1>
+        <div class="flex items-center gap-3 text-sm text-muted">
+          <time datetime="2026-03-26">March 26, 2026</time>
+          <span>&middot;</span>
+          <span>John Avera</span>
+        </div>
+      </header>
+
+      <div class="space-y-6 text-text/90 leading-relaxed">
+        <p>
+          This is not a 1.0. It is a stake in the ground. The ARIA toolchain compiles ARIA-IR to native binaries, WebAssembly modules, and JVM class files. It type-checks. It enforces effects. It works. Ship it.
+        </p>
+
+        <h2 class="font-mono text-xl font-bold pt-4">What is included</h2>
+
+        <p>
+          Three backends. The C backend is the original, shipping since day one. The WASM backend came from Arkaitz Mugica in <a href="https://github.com/jhavera/aria-clj/pull/1" target="_blank" rel="noopener" class="text-accent hover:underline">PR #1</a> and <a href="https://github.com/jhavera/aria-clj/pull/7" target="_blank" rel="noopener" class="text-accent hover:underline">PR #7</a>, the first external contributions to the project. The JVM bytecode backend landed across three phases: <a href="https://github.com/jhavera/aria-clj/pull/10" target="_blank" rel="noopener" class="text-accent hover:underline">PR #10</a>, <a href="https://github.com/jhavera/aria-clj/pull/11" target="_blank" rel="noopener" class="text-accent hover:underline">PR #11</a>, and <a href="https://github.com/jhavera/aria-clj/pull/13" target="_blank" rel="noopener" class="text-accent hover:underline">PR #13</a>, all merged today.
+        </p>
+
+        <p>
+          All three example programs compile and run on all three backends: fibonacci, bubble_sort, math_demo. That is the bar. If the same ARIA-IR source produces correct output on C, WASM, and JVM, the compiler is doing its job.
+        </p>
+
+        <h2 class="font-mono text-xl font-bold pt-4">The uberjar</h2>
+
+        <p>
+          Starting with v0.1.0, every tagged release publishes a standalone JAR. Java 11 is all you need. No Clojure CLI. No gcc. No wat2wasm. Download the JAR, point it at an <code>.aria</code> file, and you are running.
+        </p>
+
+        <pre><code>java -jar aria-clj-0.1.0.jar examples/fibonacci.aria --check
+java -jar aria-clj-0.1.0.jar examples/fibonacci.aria --backend jvm --emit-jar</code></pre>
+
+        <p>
+          <a href="https://github.com/jhavera/aria-clj/releases/latest/download/aria-clj.jar" target="_blank" rel="noopener" class="text-accent hover:underline font-semibold">Download aria-clj-0.1.0.jar</a>
+        </p>
+
+        <h2 class="font-mono text-xl font-bold pt-4">What is next</h2>
+
+        <p>
+          Layer 4 intent verification (<a href="https://github.com/jhavera/aria-clj/issues/6" target="_blank" rel="noopener" class="text-accent hover:underline">Issue #6</a>). That is the thesis-level work. Everything built so far is infrastructure. The real question ARIA exists to answer is whether an AI-authored program can be verified against the human's stated intent. The JVM backend's <code>@Intent</code> annotations give that verification a concrete target. Now it needs a verifier.
+        </p>
+
+        <p>
+          If any of this interests you, <a href="https://github.com/jhavera/aria-clj" target="_blank" rel="noopener" class="text-accent hover:underline">the repo is open</a>.
+        </p>
+      </div>
+    </div>
+  </article>
+</Base>

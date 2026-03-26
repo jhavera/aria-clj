@@ -6,11 +6,19 @@ Clojure implementation of the ARIA compiler toolchain.
 
 This is the production rewrite of the [Python prototype](https://github.com/jhavera/aria). Because ARIA-IR is s-expressions and Clojure is s-expressions, the parser collapses to `clojure.edn/read` plus validation, and immutable data structures naturally mirror SSA semantics.
 
+## Download
+
+Pre-built uberjars are available from [GitHub Releases](https://github.com/jhavera/aria-clj/releases). Only Java 11+ is required:
+
+```bash
+java -jar aria-clj-0.1.0.jar <file.aria> --check
+```
+
 ## Prerequisites
 
-- **Clojure 1.12+** (with `clojure` CLI / deps.edn)
+- **Clojure 1.12+** (with `clojure` CLI / deps.edn) — for development
 - **Java 11+**
-- **gcc** (for compiling generated C)
+- **gcc** (optional — required only for the C backend's `--run` flag)
 
 ## Quick start
 
@@ -32,6 +40,17 @@ clojure -M:run <file.aria> --check      # Type-check only
 clojure -M:run <file.aria> --run        # Compile with gcc and execute
 clojure -M:run <file.aria> -o out.c     # Write C to a file
 ```
+
+## JVM backend
+
+ARIA programs can also be compiled to JVM bytecode:
+
+```bash
+clojure -M:run <file.aria> --backend jvm       # Emit .class file
+clojure -M:run <file.aria> --emit-jar           # Emit runnable JAR
+```
+
+The generated JAR can be executed directly with `java -jar`.
 
 ## ARIA language overview
 

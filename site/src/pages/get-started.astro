@@ -119,8 +119,12 @@ clj -M:run examples/fibonacci.aria --backend wasm --optimize -o fib.wasm</code><
 
   <span class="text-muted">(</span><span class="text-[#d2a8ff]">export</span> <span class="text-accent">$main</span><span class="text-muted">))</span></code></pre>
 
-        <p class="text-muted my-4">Compile and run:</p>
+        <p class="text-muted my-4">Compile and run with the Clojure CLI:</p>
         <pre><code>$ clj -M:run hello.aria --run
+Hello, world!</code></pre>
+
+        <p class="text-muted my-4">Or, if you have the downloaded JAR and only need Java:</p>
+        <pre><code>$ java -jar aria-clj.jar hello.aria --run
 Hello, world!</code></pre>
       </section>
 

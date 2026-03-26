@@ -19,7 +19,8 @@
             [aria.reader :as reader]
             [clojure.pprint :as pp]
             [clojure.string :as str])
-  (:import [java.io File]))
+  (:import [java.io File])
+  (:gen-class))
 
 (defn compile-c!
   "Compile a C file with gcc and return the exit code."
