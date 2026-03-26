@@ -51,7 +51,7 @@ import Base from '../layouts/Base.astro';
               <tr class="border-b border-border/50">
                 <td class="py-3 pr-4">JVM Bytecode Backend</td>
                 <td class="py-3 pr-4"><span class="text-[#ffa657] font-mono">planned</span></td>
-                <td class="py-3">ARIA-JVM: compile to .class files</td>
+                <td class="py-3">ARIA-JVM: compile to .class files and runnable JARs. Removes the gcc dependency -- a contributor with Java installed can compile and run ARIA programs without a native C toolchain. Bytecode generation via ASM (org.ow2.asm), parallel to the existing aria.codegen.c namespace. The --target jvm flag routes to it. Phase 1: arithmetic, strings, main entry point, --emit-class output. Phase 2: --emit-jar with runnable manifest, plus @Intent annotation pass -- intent annotations emitted into the class file and queryable by Layer 4. Phase 3: Java standard library interop (scoped separately, does not block Phase 1 or 2).</td>
               </tr>
               <tr class="border-b border-border/50">
                 <td class="py-3 pr-4">WASM Backend</td>
