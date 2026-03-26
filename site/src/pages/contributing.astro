@@ -50,8 +50,8 @@ import Base from '../layouts/Base.astro';
               </tr>
               <tr class="border-b border-border/50">
                 <td class="py-3 pr-4">JVM Bytecode Backend</td>
-                <td class="py-3 pr-4"><span class="text-[#ffa657] font-mono">planned</span></td>
-                <td class="py-3">ARIA-JVM: compile to .class files and runnable JARs. Removes the gcc dependency -- a contributor with Java installed can compile and run ARIA programs without a native C toolchain. Bytecode generation via ASM (org.ow2.asm), parallel to the existing aria.codegen.c namespace. The --target jvm flag routes to it. Phase 1: arithmetic, strings, main entry point, --emit-class output. Phase 2: --emit-jar with runnable manifest, plus @Intent annotation pass -- intent annotations emitted into the class file and queryable by Layer 4. Phase 3: Java standard library interop (scoped separately, does not block Phase 1 or 2).</td>
+                <td class="py-3 pr-4"><span class="text-[#7ee787] font-mono">complete</span></td>
+                <td class="py-3">ARIA-JVM: compiles to .class files and runnable JARs. No gcc required -- the JVM installed to run aria-clj is also what runs the output. Bytecode generation via ASM (org.ow2.asm). --backend jvm --emit-class for individual class files, --emit-jar for a runnable JAR with manifest. (intent "...") annotations emitted as @com.ariacompiler.Intent with @Retention(RUNTIME), queryable via reflection -- the runtime foundation for Layer 4. Pointer types modeled via AriaMemory (flat int array heap). All three example programs compile and run. Shipped in PRs #10, #11, #13.</td>
               </tr>
               <tr class="border-b border-border/50">
                 <td class="py-3 pr-4">WASM Backend</td>
