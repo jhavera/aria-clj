@@ -15,6 +15,7 @@
             [aria.checker :as checker]
             [aria.codegen-c :as codegen-c]
             [aria.codegen-wat :as codegen-wat]
+            [aria.codegen-jvm :as codegen-jvm]
             [aria.reader :as reader]
             [clojure.pprint :as pp]
             [clojure.string :as str])
@@ -354,6 +355,10 @@
           :else
           (println wat-source)))
 
+      ;; JVM backend
+      (= backend "jvm")
+      (codegen-jvm/emit-class-file! module ".")
+
       ;; C backend (default)
       :else
       (let [c-source (codegen-c/generate module)]
@@ -389,9 +394,10 @@
       opts
       (let [arg (first args)]
         (cond
-          (= arg "--emit-c")   (recur (rest args) (assoc opts :emit-c true))
-          (= arg "--emit-wat") (recur (rest args) (assoc opts :emit-wat true))
-          (= arg "--emit-ast") (recur (rest args) (assoc opts :emit-ast true))
+          (= arg "--emit-c")     (recur (rest args) (assoc opts :emit-c true))
+          (= arg "--emit-wat")   (recur (rest args) (assoc opts :emit-wat true))
+          (= arg "--emit-class") (recur (rest args) (assoc opts :backend "jvm"))
+          (= arg "--emit-ast")   (recur (rest args) (assoc opts :emit-ast true))
           (= arg "--check")    (recur (rest args) (assoc opts :check-only true))
           (= arg "--run")      (recur (rest args) (assoc opts :run true))
           (= arg "--optimize") (recur (rest args) (assoc opts :optimize true))
