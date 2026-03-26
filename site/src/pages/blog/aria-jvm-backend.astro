@@ -1,0 +1,62 @@
+---
+import Base from '../../layouts/Base.astro';
+---
+<Base title="ARIA-JVM: A JVM Bytecode Backend Without gcc - ARIA Blog">
+  <article class="py-16 px-4">
+    <div class="max-w-3xl mx-auto">
+      <a href="/blog" class="text-sm text-muted hover:text-accent transition-colors">&larr; Back to Blog</a>
+
+      <header class="mt-6 mb-12">
+        <h1 class="font-mono text-3xl md:text-4xl font-bold mb-4">ARIA-JVM: A JVM Bytecode Backend Without gcc</h1>
+        <div class="flex items-center gap-3 text-sm text-muted">
+          <time datetime="2026-03-26">March 26, 2026</time>
+          <span>&middot;</span>
+          <span>John Avera</span>
+        </div>
+      </header>
+
+      <div class="space-y-6 text-text/90 leading-relaxed">
+        <p>
+          The C backend requires gcc. That is a real friction point for contributors -- a fresh machine needs Java, Clojure, and a native C toolchain just to run hello world. The JVM backend removes that third dependency entirely.
+        </p>
+
+        <p>
+          <code>--backend jvm</code> routes to the new <code>aria.codegen-jvm</code> namespace. The output is a <code>.class</code> file or a runnable JAR. The JVM already installed to run <code>aria-clj</code> is also what runs the output. No gcc. No clang. No system compiler at all.
+        </p>
+
+        <p>
+          Bytecode generation uses ASM -- the same library Clojure itself uses to compile Clojure code. That endorsement is sufficient.
+        </p>
+
+        <p>
+          The type mapping is direct. <code>add.i32</code> becomes <code>iadd</code>. <code>mul.f64</code> becomes <code>dmul</code>. ARIA-IR's type-suffixed operations were designed to eliminate ambiguity. The JVM bytecode instruction set was designed the same way. They align cleanly.
+        </p>
+
+        <p>
+          Three phases shipped across three PRs:
+        </p>
+
+        <p>
+          <strong>Phase 1 (<a href="https://github.com/jhavera/aria-clj/pull/10" target="_blank" rel="noopener" class="text-accent hover:underline">PR #10</a>):</strong> Arithmetic, string operations, control flow, <code>--emit-class</code> output. The acceptance test: <code>aria-clj examples/fibonacci.aria --backend jvm --emit-class && java Fibonacci</code> with no gcc in the chain.
+        </p>
+
+        <p>
+          <strong>Phase 2 (<a href="https://github.com/jhavera/aria-clj/pull/11" target="_blank" rel="noopener" class="text-accent hover:underline">PR #11</a>):</strong> <code>--emit-jar</code> with a runnable manifest. The <code>@Intent</code> annotation pass -- <code>(intent "...")</code> nodes are emitted as <code>@com.ariacompiler.Intent</code> annotations on generated methods with <code>@Retention(RUNTIME)</code>, queryable at runtime via reflection. The C backend preserves intent as a comment. Comments are inert. The JVM annotation system makes intent first-class, and gives Layer 4 intent verification a concrete implementation target.
+        </p>
+
+        <p>
+          <strong>Phase 3 (<a href="https://github.com/jhavera/aria-clj/pull/13" target="_blank" rel="noopener" class="text-accent hover:underline">PR #13</a>):</strong> Pointer support via <code>AriaMemory</code> -- the JVM has no raw pointers, so the ARIA heap is modeled as a static flat int array and pointers become int indices. <code>rem.i32</code> and <code>rem.i64</code>. Type casting (<code>cast i32 i64</code>). Correct <code>i64</code> boxing in print statements. All three example programs now compile and run: fibonacci, bubble sort, and math demo.
+        </p>
+
+        <pre><code>clojure -M:run examples/bubble_sort.aria --backend jvm --emit-jar
+java -jar Bubble_sort.jar
+Before sorting: [64, 34, 25, 12, 22, 11, 90, 1]
+After sorting:  [1, 11, 12, 22, 25, 34, 64, 90]</code></pre>
+
+        <p>
+          92 tests. 252 assertions. Zero failures.
+        </p>
+      </div>
+    </div>
+  </article>
+</Base>
