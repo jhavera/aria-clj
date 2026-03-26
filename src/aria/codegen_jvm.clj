@@ -48,12 +48,14 @@
   (keyword s))
 
 (defn- aria-type-map->kw
-  "Convert AST type map {:type/kind :primitive :type/name \"i32\"} to keyword."
+  "Convert AST type map {:type/kind :primitive :type/name \"i32\"} to keyword.
+  Pointer types map to :i32 since pointers are int indices into AriaMemory."
   [t]
   (when t
-    (if (= :primitive (:type/kind t))
-      (keyword (:type/name t))
-      (throw (ex-info "Non-primitive type in JVM backend" {:type t})))))
+    (case (:type/kind t)
+      :primitive (keyword (:type/name t))
+      :ptr       :i32
+      (throw (ex-info "Unknown type kind in JVM backend" {:type t})))))
 
 (defn- wide-type?
   "Returns true for types that occupy two JVM slots (long, double)."
@@ -68,10 +70,12 @@
     [:sub :i32] (.visitInsn mv Opcodes/ISUB)
     [:mul :i32] (.visitInsn mv Opcodes/IMUL)
     [:div :i32] (.visitInsn mv Opcodes/IDIV)
+    [:rem :i32] (.visitInsn mv Opcodes/IREM)
     [:add :i64] (.visitInsn mv Opcodes/LADD)
     [:sub :i64] (.visitInsn mv Opcodes/LSUB)
     [:mul :i64] (.visitInsn mv Opcodes/LMUL)
     [:div :i64] (.visitInsn mv Opcodes/LDIV)
+    [:rem :i64] (.visitInsn mv Opcodes/LREM)
     [:add :f64] (.visitInsn mv Opcodes/DADD)
     [:sub :f64] (.visitInsn mv Opcodes/DSUB)
     [:mul :f64] (.visitInsn mv Opcodes/DMUL)
@@ -136,6 +140,7 @@
 (declare emit-expr!)
 (declare emit-stmt!)
 (declare emit-print!)
+(declare infer-expr-type)
 
 (defn- emit-expr!
   "Emit bytecode that pushes the expression's value onto the stack."
@@ -178,7 +183,7 @@
       (emit-expr! mv ctx (:left node))
       (emit-expr! mv ctx (:right node))
       (case type-kw
-        :i32 (emit-i32-comparison mv (:op node))))
+        (:i32 :bool) (emit-i32-comparison mv (:op node))))
 
     :call
     (let [target (:target node)
@@ -231,6 +236,33 @@
             (emit-expr! mv ctx last-node))))
       (.visitLabel mv end-label))
 
+    :cast
+    (let [from-kw (keyword (:type/name (:from-type node)))
+          to-kw   (keyword (:type/name (:to-type node)))]
+      (emit-expr! mv ctx (:value node))
+      (case [from-kw to-kw]
+        [:i32 :i64] (.visitInsn mv Opcodes/I2L)
+        [:i64 :i32] (.visitInsn mv Opcodes/L2I)
+        [:i32 :f64] (.visitInsn mv Opcodes/I2D)
+        [:f64 :i32] (.visitInsn mv Opcodes/D2I)
+        [:i64 :f64] (.visitInsn mv Opcodes/L2D)
+        [:f64 :i64] (.visitInsn mv Opcodes/D2L)
+        (throw (ex-info "Unknown cast" {:from from-kw :to to-kw}))))
+
+    :alloc
+    (do (if (:count node)
+          (emit-expr! mv ctx (:count node))
+          (.visitInsn mv Opcodes/ICONST_1))
+        (.visitMethodInsn mv Opcodes/INVOKESTATIC
+                          "com/ariacompiler/AriaMemory"
+                          "alloc" "(I)I" false))
+
+    :load
+    (do (emit-expr! mv ctx (:ptr node))
+        (.visitMethodInsn mv Opcodes/INVOKESTATIC
+                          "com/ariacompiler/AriaMemory"
+                          "load" "(I)I" false))
+
     (throw (ex-info "Unknown expression node in JVM codegen" {:node/type (:node/type node)}))))
 
 ;; ── Statement Codegen ───────────────────────────────────────
@@ -243,8 +275,12 @@
 
     :let
     (let [type-kw (aria-type-map->kw (:aria/type node))
-          slot (alloc-local! ctx (:name node) type-kw)]
+          slot (alloc-local! ctx (:name node) type-kw)
+          val-type (infer-expr-type ctx (:value node))]
       (emit-expr! mv ctx (:value node))
+      ;; Widen i32 to i64 if the declared type is i64
+      (when (and (= type-kw :i64) (= val-type :i32))
+        (.visitInsn mv Opcodes/I2L))
       (.visitVarInsn mv (aria-type->store-op type-kw) slot))
 
     :set-var
@@ -252,8 +288,12 @@
           local (get-local ctx var-name)]
       (when-not local
         (throw (ex-info "Undefined variable in set-var" {:name var-name})))
-      (emit-expr! mv ctx (:value node))
-      (.visitVarInsn mv (aria-type->store-op (:type local)) (:slot local)))
+      (let [val-type (infer-expr-type ctx (:value node))]
+        (emit-expr! mv ctx (:value node))
+        ;; Widen i32 to i64 if the local is i64
+        (when (and (= (:type local) :i64) (= val-type :i32))
+          (.visitInsn mv Opcodes/I2L))
+        (.visitVarInsn mv (aria-type->store-op (:type local)) (:slot local))))
 
     :return
     (if (:value node)
@@ -296,6 +336,19 @@
         (emit-expr! mv ctx (:cond node))
         (.visitJumpInsn mv Opcodes/IFNE (:end labels))))
 
+    :store
+    (do (emit-expr! mv ctx (:ptr node))
+        (emit-expr! mv ctx (:value node))
+        (.visitMethodInsn mv Opcodes/INVOKESTATIC
+                          "com/ariacompiler/AriaMemory"
+                          "store" "(II)V" false))
+
+    :free
+    (do (emit-expr! mv ctx (:ptr node))
+        (.visitMethodInsn mv Opcodes/INVOKESTATIC
+                          "com/ariacompiler/AriaMemory"
+                          "free" "(I)V" false))
+
     :print
     (emit-print! mv ctx node)
 
@@ -318,10 +371,56 @@
 
 ;; ── Print codegen ───────────────────────────────────────────
 
+(defn- infer-expr-type
+  "Best-effort type inference for an expression.
+  Returns the keyword type (:i32, :i64, :f64, :bool, :str)."
+  [ctx node]
+  (case (:node/type node)
+    :var-ref (let [local (get-local ctx (:name node))]
+               (if local (:type local) :i32))
+    :int-literal :i32
+    :float-literal :f64
+    :bool-literal :bool
+    :string-literal :str
+    :bin-op (type-suffix->kw (:type-suffix node))
+    :comparison :i32
+    :call (let [func (get (:functions ctx) (:target node))]
+            (if (and func (:result func))
+              (aria-type-map->kw (:result func))
+              :i32))
+    :cast (keyword (:type/name (:to-type node)))
+    :alloc :i32
+    :load :i32
+    :i32))
+
+(defn- emit-box!
+  "Emit boxing bytecode for a primitive value on the stack."
+  [^MethodVisitor mv type-kw]
+  (case type-kw
+    :i64 (.visitMethodInsn mv Opcodes/INVOKESTATIC
+                           "java/lang/Long" "valueOf"
+                           "(J)Ljava/lang/Long;" false)
+    :f64 (.visitMethodInsn mv Opcodes/INVOKESTATIC
+                           "java/lang/Double" "valueOf"
+                           "(D)Ljava/lang/Double;" false)
+    ;; default: box as Integer (covers i32, bool)
+    (.visitMethodInsn mv Opcodes/INVOKESTATIC
+                      "java/lang/Integer" "valueOf"
+                      "(I)Ljava/lang/Integer;" false)))
+
+(defn- c-format->java-format
+  "Convert C-style format specifiers to Java-compatible ones.
+  Java's printf uses %d for both int and long, not %ld."
+  [fmt]
+  (-> fmt
+      (str/replace "%ld" "%d")
+      (str/replace "%lu" "%d")
+      (str/replace "%lf" "%f")))
+
 (defn- emit-print!
   "Emit bytecode for a print statement using System.out.printf."
   [^MethodVisitor mv ctx node]
-  (let [fmt (:format-str node)
+  (let [fmt (c-format->java-format (:format-str node))
         args (:args node)]
     ;; Get System.out
     (.visitFieldInsn mv Opcodes/GETSTATIC "java/lang/System" "out" "Ljava/io/PrintStream;")
@@ -335,10 +434,8 @@
       (.visitInsn mv Opcodes/DUP)
       (.visitLdcInsn mv (int i))
       (emit-expr! mv ctx arg)
-      ;; Box primitive
-      (.visitMethodInsn mv Opcodes/INVOKESTATIC
-                        "java/lang/Integer" "valueOf"
-                        "(I)Ljava/lang/Integer;" false)
+      ;; Box based on inferred type
+      (emit-box! mv (infer-expr-type ctx arg))
       (.visitInsn mv Opcodes/AASTORE))
     ;; Call printf
     (.visitMethodInsn mv Opcodes/INVOKEVIRTUAL
@@ -387,6 +484,92 @@
     (let [mv (.visitMethod cw (+ Opcodes/ACC_PUBLIC Opcodes/ACC_ABSTRACT)
                            "value" "()Ljava/lang/String;" nil nil)]
       (.visitEnd mv))
+    (.visitEnd cw)
+    (.toByteArray cw)))
+
+;; ── AriaMemory Runtime ──────────────────────────────────────
+
+(defn- generate-aria-memory-class
+  "Generates bytecode for the AriaMemory runtime support class.
+  This class implements the ARIA heap as a flat int array.
+  Methods: alloc(int count) -> int, load(int addr) -> int,
+           store(int addr, int val) -> void, free(int addr) -> void.
+  Returns a byte array containing a valid .class file."
+  []
+  (let [cw (ClassWriter. ClassWriter/COMPUTE_FRAMES)]
+    (.visit cw Opcodes/V11
+            (+ Opcodes/ACC_PUBLIC Opcodes/ACC_SUPER)
+            "com/ariacompiler/AriaMemory" nil "java/lang/Object" nil)
+
+    ;; Static field: int[] heap
+    (.visitField cw (+ Opcodes/ACC_PRIVATE Opcodes/ACC_STATIC)
+                 "heap" "[I" nil nil)
+
+    ;; Static field: int next (next free index)
+    (.visitField cw (+ Opcodes/ACC_PRIVATE Opcodes/ACC_STATIC)
+                 "next" "I" nil nil)
+
+    ;; Static initializer: heap = new int[65536]; next = 0;
+    (let [mv (.visitMethod cw Opcodes/ACC_STATIC "<clinit>" "()V" nil nil)]
+      (.visitCode mv)
+      (.visitLdcInsn mv (int 65536))
+      (.visitIntInsn mv Opcodes/NEWARRAY Opcodes/T_INT)
+      (.visitFieldInsn mv Opcodes/PUTSTATIC "com/ariacompiler/AriaMemory" "heap" "[I")
+      (.visitInsn mv Opcodes/ICONST_0)
+      (.visitFieldInsn mv Opcodes/PUTSTATIC "com/ariacompiler/AriaMemory" "next" "I")
+      (.visitInsn mv Opcodes/RETURN)
+      (.visitMaxs mv 0 0)
+      (.visitEnd mv))
+
+    ;; public static int alloc(int count)
+    (let [mv (.visitMethod cw (+ Opcodes/ACC_PUBLIC Opcodes/ACC_STATIC)
+                           "alloc" "(I)I" nil nil)]
+      (.visitCode mv)
+      ;; int addr = next;
+      (.visitFieldInsn mv Opcodes/GETSTATIC "com/ariacompiler/AriaMemory" "next" "I")
+      (.visitVarInsn mv Opcodes/ISTORE 1)
+      ;; next = next + count;
+      (.visitFieldInsn mv Opcodes/GETSTATIC "com/ariacompiler/AriaMemory" "next" "I")
+      (.visitVarInsn mv Opcodes/ILOAD 0)
+      (.visitInsn mv Opcodes/IADD)
+      (.visitFieldInsn mv Opcodes/PUTSTATIC "com/ariacompiler/AriaMemory" "next" "I")
+      ;; return addr;
+      (.visitVarInsn mv Opcodes/ILOAD 1)
+      (.visitInsn mv Opcodes/IRETURN)
+      (.visitMaxs mv 0 0)
+      (.visitEnd mv))
+
+    ;; public static int load(int addr)
+    (let [mv (.visitMethod cw (+ Opcodes/ACC_PUBLIC Opcodes/ACC_STATIC)
+                           "load" "(I)I" nil nil)]
+      (.visitCode mv)
+      (.visitFieldInsn mv Opcodes/GETSTATIC "com/ariacompiler/AriaMemory" "heap" "[I")
+      (.visitVarInsn mv Opcodes/ILOAD 0)
+      (.visitInsn mv Opcodes/IALOAD)
+      (.visitInsn mv Opcodes/IRETURN)
+      (.visitMaxs mv 0 0)
+      (.visitEnd mv))
+
+    ;; public static void store(int addr, int val)
+    (let [mv (.visitMethod cw (+ Opcodes/ACC_PUBLIC Opcodes/ACC_STATIC)
+                           "store" "(II)V" nil nil)]
+      (.visitCode mv)
+      (.visitFieldInsn mv Opcodes/GETSTATIC "com/ariacompiler/AriaMemory" "heap" "[I")
+      (.visitVarInsn mv Opcodes/ILOAD 0)
+      (.visitVarInsn mv Opcodes/ILOAD 1)
+      (.visitInsn mv Opcodes/IASTORE)
+      (.visitInsn mv Opcodes/RETURN)
+      (.visitMaxs mv 0 0)
+      (.visitEnd mv))
+
+    ;; public static void free(int addr) -- no-op
+    (let [mv (.visitMethod cw (+ Opcodes/ACC_PUBLIC Opcodes/ACC_STATIC)
+                           "free" "(I)V" nil nil)]
+      (.visitCode mv)
+      (.visitInsn mv Opcodes/RETURN)
+      (.visitMaxs mv 0 0)
+      (.visitEnd mv))
+
     (.visitEnd cw)
     (.toByteArray cw)))
 
@@ -487,6 +670,7 @@
 
 (defn emit-class-file!
   "Writes a compiled .class file to output-dir.
+  Also writes AriaMemory and Intent support classes.
   Creates output-dir if it does not exist.
   Returns the java.io.File written."
   [ast output-dir]
@@ -499,6 +683,20 @@
     (.mkdirs dir)
     (with-open [os (java.io.FileOutputStream. out-file)]
       (.write os ^bytes bytes))
+    ;; Write AriaMemory support class
+    (let [mem-dir (java.io.File. dir "com/ariacompiler")
+          mem-file (java.io.File. mem-dir "AriaMemory.class")
+          mem-bytes (generate-aria-memory-class)]
+      (.mkdirs mem-dir)
+      (with-open [os (java.io.FileOutputStream. mem-file)]
+        (.write os ^bytes mem-bytes)))
+    ;; Write Intent annotation class
+    (let [intent-dir (java.io.File. dir "com/ariacompiler")
+          intent-file (java.io.File. intent-dir "Intent.class")
+          intent-bytes (generate-intent-annotation-class)]
+      (.mkdirs intent-dir)
+      (with-open [os (java.io.FileOutputStream. intent-file)]
+        (.write os ^bytes intent-bytes)))
     (println (str "Wrote " (.getPath out-file) " (" (count bytes) " bytes)"))
     out-file))
 
@@ -507,6 +705,7 @@
   The JAR includes:
     - The compiled ARIA module as a .class file
     - The com.ariacompiler.Intent annotation class
+    - The com.ariacompiler.AriaMemory runtime class
     - A manifest with Main-Class set to the compiled class name
   Returns the java.io.File written."
   [ast output-dir]
@@ -530,6 +729,12 @@
                           "com/ariacompiler/Intent.class"))
       (.write jos ^bytes intent-bytes)
       (.closeEntry jos)
+      ;; Write the AriaMemory runtime class
+      (let [mem-bytes (generate-aria-memory-class)]
+        (.putNextEntry jos (java.util.jar.JarEntry.
+                            "com/ariacompiler/AriaMemory.class"))
+        (.write jos ^bytes mem-bytes)
+        (.closeEntry jos))
       ;; Write the compiled ARIA module class
       (.putNextEntry jos (java.util.jar.JarEntry.
                           (str class-name ".class")))
