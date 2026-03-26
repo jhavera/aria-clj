@@ -1,0 +1,2010 @@
+; ═══════════════════════════════════════════════════════════
+; ARIA Self-Hosted Parser
+; Transforms SExp tree (from reader) into validated AST nodes
+;
+; Module structure:
+;   SECTION 1 — SHARED: externs, types
+;   SECTION 2 — READER: s-expression parsing
+;   SECTION 3 — PARSER: AST construction from SExp tree
+;   SECTION 4 — DEBUG + MAIN: printers, tests, exports
+;
+; ASTNode tags:
+;   0=int-lit  1=float-lit  2=bool-lit  3=str-lit  4=var-ref
+;   5=bin-op   6=unary-op   7=cmp-op    8=let      9=set-var
+;   10=call    11=return    12=if       13=loop    14=block
+;   15=branch  16=branch-if 17=alloc    18=free    19=load
+;   20=store   21=load-fld  22=store-fld 23=cast   24=print
+;   25=intent  26=seq       27=param    28=func    29=global
+;   30=type-def 31=export   32=extern   33=module
+;
+; TypeInfo kinds:
+;   0=primitive 1=ptr 2=array 3=slice 4=struct 5=func-type
+; ═══════════════════════════════════════════════════════════
+
+(module "parser"
+
+  ;; ═══════════════════════════════════════════════════════════
+  ;; SECTION 1: SHARED (externs, types used by both reader and parser)
+  ;; ═══════════════════════════════════════════════════════════
+
+  ;; ── Extern declarations ────────────────────────────────────
+
+  (extern "sys" $trap (param $msg (ptr u8)))
+  (extern "sys" $str_len (param $s (ptr u8)) (result i32))
+  (extern "sys" $str_eq (param $a (ptr u8)) (param $b (ptr u8)) (result i32))
+
+  ;; ── SExp node type (produced by reader, consumed by parser) ─
+
+  (type $SExp (struct
+    (field $tag i32)
+    (field $int_val i64)
+    (field $str_val (ptr u8))
+    (field $children (ptr i32))
+    (field $count i32)
+    (field $cap i32)))
+
+  ;; ── AST node type (produced by parser) ─────────────────────
+
+  (type $ASTNode (struct
+    (field $tag       i32)
+    (field $str1      (ptr u8))
+    (field $str2      (ptr u8))
+    (field $int1      i64)
+    (field $bool1     i32)
+    (field $type1     i32)
+    (field $type2     i32)
+    (field $left      i32)
+    (field $right     i32)
+    (field $children  (ptr i32))
+    (field $count     i32)
+    (field $cap       i32)
+    (field $children2 (ptr i32))
+    (field $count2    i32)
+    (field $cap2      i32)))
+
+  ;; ── TypeInfo type (produced by parser for type annotations) ─
+
+  (type $TypeInfo (struct
+    (field $kind     i32)
+    (field $name     (ptr u8))
+    (field $inner    i32)
+    (field $size     i32)
+    (field $children (ptr i32))
+    (field $count    i32)
+    (field $cap      i32)
+    (field $result   i32)
+    (field $field_start i32)
+    (field $field_count i32)))
+
+  ;; ── FieldInfo type (for struct type fields) ────────────────
+
+  (type $FieldInfo (struct
+    (field $name (ptr u8))
+    (field $type_idx i32)))
+
+  ;; ═══════════════════════════════════════════════════════════
+  ;; SECTION 2: READER
+  ;; Parses ARIA source text into a flat pool of SExp nodes.
+  ;; Produces: $node_pool filled with SExp nodes, root list index.
+  ;; ═══════════════════════════════════════════════════════════
+
+  ;; ── Reader globals ─────────────────────────────────────────
+
+  (global mut $node_pool (ptr $SExp) 0)
+  (global mut $pool_pos  i32 0)
+
+  ;; ── Reader pool management ─────────────────────────────────
+
+  (func $init_pool
+    (effects mem)
+    (intent "Allocate the SExp node pool with 8192 slots")
+    (set $node_pool (alloc $SExp 8192))
+    (set $pool_pos 0))
+
+  (func $alloc_node
+    (result i32)
+    (effects mem io)
+    (intent "Allocate a fresh SExp node, return its pool index")
+    (if (ge.i32 $pool_pos 8192)
+      (then (call $trap "Node pool exhausted"))
+      (else))
+    (let %idx i32 $pool_pos)
+    (let %n (ptr $SExp) (add.i32 $node_pool %idx))
+    (store.field %n "tag" 0)
+    (store.field %n "int_val" 0)
+    (store.field %n "count" 0)
+    (store.field %n "cap" 0)
+    (set $pool_pos (add.i32 $pool_pos 1))
+    (return %idx))
+
+  (func $node_at
+    (param $idx i32)
+    (result (ptr $SExp))
+    (effects mem)
+    (intent "Get pointer to SExp node by pool index")
+    (return (add.i32 $node_pool $idx)))
+
+  ;; ── Reader node constructors ───────────────────────────────
+
+  (func $make_int
+    (param $val i64)
+    (result i32)
+    (effects mem io)
+    (intent "Create an integer literal SExp node")
+    (let %idx i32 (call $alloc_node))
+    (let %n (ptr $SExp) (call $node_at %idx))
+    (store.field %n "tag" 0)
+    (store.field %n "int_val" $val)
+    (return %idx))
+
+  (func $make_string
+    (param $val (ptr u8))
+    (result i32)
+    (effects mem io)
+    (intent "Create a string literal SExp node")
+    (let %idx i32 (call $alloc_node))
+    (let %n (ptr $SExp) (call $node_at %idx))
+    (store.field %n "tag" 2)
+    (store.field %n "str_val" $val)
+    (return %idx))
+
+  (func $make_symbol
+    (param $val (ptr u8))
+    (result i32)
+    (effects mem io)
+    (intent "Create a symbol SExp node")
+    (let %idx i32 (call $alloc_node))
+    (let %n (ptr $SExp) (call $node_at %idx))
+    (store.field %n "tag" 3)
+    (store.field %n "str_val" $val)
+    (return %idx))
+
+  (func $make_list
+    (result i32)
+    (effects mem io)
+    (intent "Create an empty list SExp node with initial capacity 32")
+    (let %idx i32 (call $alloc_node))
+    (let %n (ptr $SExp) (call $node_at %idx))
+    (store.field %n "tag" 4)
+    (store.field %n "children" (alloc i32 32))
+    (store.field %n "count" 0)
+    (store.field %n "cap" 32)
+    (return %idx))
+
+  (func $list_append
+    (param $list_idx i32)
+    (param $child_idx i32)
+    (effects mem io div)
+    (intent "Append a child index to a list SExp node, growing if needed")
+    (let %list (ptr $SExp) (call $node_at $list_idx))
+    (let %count i32 (load.field %list "count"))
+    (let %cap i32 (load.field %list "cap"))
+    (if (ge.i32 %count %cap)
+      (then
+        (let %new_cap i32 (mul.i32 %cap 2))
+        (let %new_arr (ptr i32) (alloc i32 %new_cap))
+        (let %old_arr (ptr i32) (load.field %list "children"))
+        (local mut $i i32 0)
+        (loop $copy
+          (if (ge.i32 $i %count)
+            (then (br $copy))
+            (else
+              (store.i32 (add.i32 %new_arr $i) (load.i32 (add.i32 %old_arr $i)))
+              (set $i (add.i32 $i 1)))))
+        (free %old_arr)
+        (store.field %list "children" %new_arr)
+        (store.field %list "cap" %new_cap))
+      (else))
+    (let %list2 (ptr $SExp) (call $node_at $list_idx))
+    (let %arr (ptr i32) (load.field %list2 "children"))
+    (let %cnt i32 (load.field %list2 "count"))
+    (store.i32 (add.i32 %arr %cnt) $child_idx)
+    (store.field %list2 "count" (add.i32 %cnt 1)))
+
+  ;; ── Reader character helpers ───────────────────────────────
+
+  (func $char_at
+    (param $src (ptr u8))
+    (param $pos i32)
+    (result i32)
+    (effects mem)
+    (intent "Read a single byte from source at given position")
+    (return (load.u8 (add.i32 $src $pos))))
+
+  (func $is_whitespace
+    (param $c i32)
+    (result i32)
+    (effects pure)
+    (intent "Check if character is whitespace: space, newline, CR, or tab")
+    (if (eq.i32 $c 32) (then (return 1)) (else))
+    (if (eq.i32 $c 10) (then (return 1)) (else))
+    (if (eq.i32 $c 13) (then (return 1)) (else))
+    (if (eq.i32 $c 9)  (then (return 1)) (else))
+    (return 0))
+
+  (func $is_digit
+    (param $c i32)
+    (result i32)
+    (effects pure)
+    (intent "Check if character is an ASCII digit 0-9")
+    (if (ge.i32 $c 48)
+      (then (if (le.i32 $c 57) (then (return 1)) (else)))
+      (else))
+    (return 0))
+
+  (func $is_sym_char
+    (param $c i32)
+    (result i32)
+    (effects pure)
+    (intent "Check if character is valid in an ARIA symbol")
+    (if (ge.i32 $c 97) (then (if (le.i32 $c 122) (then (return 1)) (else))) (else))
+    (if (ge.i32 $c 65) (then (if (le.i32 $c 90)  (then (return 1)) (else))) (else))
+    (if (ge.i32 $c 48) (then (if (le.i32 $c 57)  (then (return 1)) (else))) (else))
+    (if (eq.i32 $c 95) (then (return 1)) (else))
+    (if (eq.i32 $c 45) (then (return 1)) (else))
+    (if (eq.i32 $c 46) (then (return 1)) (else))
+    (if (eq.i32 $c 36) (then (return 1)) (else))
+    (if (eq.i32 $c 37) (then (return 1)) (else))
+    (if (eq.i32 $c 47) (then (return 1)) (else))
+    (if (eq.i32 $c 42) (then (return 1)) (else))
+    (return 0))
+
+  ;; ── Reader parsing functions ───────────────────────────────
+
+  (func $skip_ws
+    (param $src (ptr u8))
+    (param $pos i32)
+    (param $len i32)
+    (result i32)
+    (effects mem div)
+    (intent "Skip whitespace and semicolon line comments, return new position")
+    (local mut $p i32 $pos)
+    (loop $ws_loop
+      (if (ge.i32 $p $len)
+        (then (br $ws_loop))
+        (else
+          (let %c i32 (call $char_at $src $p))
+          (if (eq.i32 %c 59)
+            (then
+              (loop $comment
+                (if (ge.i32 $p $len)
+                  (then (br $comment))
+                  (else
+                    (if (eq.i32 (call $char_at $src $p) 10)
+                      (then (set $p (add.i32 $p 1)) (br $comment))
+                      (else (set $p (add.i32 $p 1))))))))
+            (else
+              (if (call $is_whitespace %c)
+                (then (set $p (add.i32 $p 1)))
+                (else (br $ws_loop))))))))
+    (return $p))
+
+  (func $parse_int
+    (param $src (ptr u8))
+    (param $pos i32)
+    (param $len i32)
+    (param $out_pos (ptr i32))
+    (result i32)
+    (effects mem io div)
+    (intent "Parse an integer literal from source text into a SExp node")
+    (local mut $p i32 $pos)
+    (local mut $val i64 0)
+    (local mut $neg i32 0)
+    (if (eq.i32 (call $char_at $src $p) 45)
+      (then
+        (if (call $is_digit (call $char_at $src (add.i32 $p 1)))
+          (then (set $neg 1) (set $p (add.i32 $p 1)))
+          (else)))
+      (else))
+    (loop $digits
+      (if (ge.i32 $p $len)
+        (then (br $digits))
+        (else
+          (let %c i32 (call $char_at $src $p))
+          (if (call $is_digit %c)
+            (then
+              (set $val (add.i64 (mul.i64 $val 10) (cast i32 i64 (sub.i32 %c 48))))
+              (set $p (add.i32 $p 1)))
+            (else (br $digits))))))
+    (if $neg (then (set $val (sub.i64 0 $val))) (else))
+    (store.i32 $out_pos $p)
+    (return (call $make_int $val)))
+
+  (func $parse_str
+    (param $src (ptr u8))
+    (param $pos i32)
+    (param $len i32)
+    (param $out_pos (ptr i32))
+    (result i32)
+    (effects mem io div)
+    (intent "Parse a double-quoted string literal with escape sequences")
+    (local mut $p i32 (add.i32 $pos 1))
+    (let %buf (ptr u8) (alloc u8 1024))
+    (local mut $bi i32 0)
+    (loop $str_loop
+      (if (ge.i32 $p $len)
+        (then (call $trap "Unterminated string"))
+        (else
+          (let %c i32 (call $char_at $src $p))
+          (if (eq.i32 %c 34)
+            (then (set $p (add.i32 $p 1)) (br $str_loop))
+            (else
+              (if (eq.i32 %c 92)
+                (then
+                  (set $p (add.i32 $p 1))
+                  (let %esc i32 (call $char_at $src $p))
+                  (if (eq.i32 %esc 110)
+                    (then (store.u8 (add.i32 %buf $bi) 10))
+                    (else (if (eq.i32 %esc 116)
+                      (then (store.u8 (add.i32 %buf $bi) 9))
+                      (else (if (eq.i32 %esc 92)
+                        (then (store.u8 (add.i32 %buf $bi) 92))
+                        (else (if (eq.i32 %esc 34)
+                          (then (store.u8 (add.i32 %buf $bi) 34))
+                          (else (store.u8 (add.i32 %buf $bi) %esc)))))))))
+                  (set $bi (add.i32 $bi 1))
+                  (set $p (add.i32 $p 1)))
+                (else
+                  (store.u8 (add.i32 %buf $bi) %c)
+                  (set $bi (add.i32 $bi 1))
+                  (set $p (add.i32 $p 1)))))))))
+    (store.u8 (add.i32 %buf $bi) 0)
+    (store.i32 $out_pos $p)
+    (return (call $make_string %buf)))
+
+  (func $parse_sym
+    (param $src (ptr u8))
+    (param $pos i32)
+    (param $len i32)
+    (param $out_pos (ptr i32))
+    (result i32)
+    (effects mem io div)
+    (intent "Parse a symbol token from source text into a SExp node")
+    (local mut $p i32 $pos)
+    (let %buf (ptr u8) (alloc u8 256))
+    (local mut $bi i32 0)
+    (loop $sym_loop
+      (if (ge.i32 $p $len)
+        (then (br $sym_loop))
+        (else
+          (let %c i32 (call $char_at $src $p))
+          (if (call $is_sym_char %c)
+            (then
+              (store.u8 (add.i32 %buf $bi) %c)
+              (set $bi (add.i32 $bi 1))
+              (set $p (add.i32 $p 1)))
+            (else (br $sym_loop))))))
+    (store.u8 (add.i32 %buf $bi) 0)
+    (store.i32 $out_pos $p)
+    (return (call $make_symbol %buf)))
+
+  (func $parse_sexp
+    (param $src (ptr u8))
+    (param $pos i32)
+    (param $len i32)
+    (param $out_pos (ptr i32))
+    (result i32)
+    (effects mem io div)
+    (intent "Parse one s-expression from source: list, string, number, or symbol")
+    (local mut $p i32 (call $skip_ws $src $pos $len))
+    (if (ge.i32 $p $len)
+      (then (call $trap "Unexpected end of input"))
+      (else))
+    (let %c i32 (call $char_at $src $p))
+    (if (eq.i32 %c 40)
+      (then
+        (set $p (add.i32 $p 1))
+        (let %list_idx i32 (call $make_list))
+        (loop $list_loop
+          (set $p (call $skip_ws $src $p $len))
+          (if (ge.i32 $p $len)
+            (then (call $trap "Unterminated list"))
+            (else))
+          (if (eq.i32 (call $char_at $src $p) 41)
+            (then (set $p (add.i32 $p 1)) (br $list_loop))
+            (else
+              (let %out (ptr i32) (alloc i32))
+              (let %child_idx i32 (call $parse_sexp $src $p $len %out))
+              (set $p (load.i32 %out))
+              (free %out)
+              (call $list_append %list_idx %child_idx))))
+        (store.i32 $out_pos $p)
+        (return %list_idx))
+      (else))
+    (if (eq.i32 %c 34)
+      (then (return (call $parse_str $src $p $len $out_pos)))
+      (else))
+    (if (call $is_digit %c)
+      (then (return (call $parse_int $src $p $len $out_pos)))
+      (else))
+    (if (eq.i32 %c 45)
+      (then
+        (if (lt.i32 (add.i32 $p 1) $len)
+          (then
+            (if (call $is_digit (call $char_at $src (add.i32 $p 1)))
+              (then (return (call $parse_int $src $p $len $out_pos)))
+              (else)))
+          (else)))
+      (else))
+    (if (call $is_sym_char %c)
+      (then (return (call $parse_sym $src $p $len $out_pos)))
+      (else))
+    (call $trap "Unexpected character")
+    (return 0))
+
+  (func $read_all
+    (param $src (ptr u8))
+    (result i32)
+    (effects mem io div)
+    (intent "Read all top-level s-expressions from source into a list node")
+    (let %len i32 (call $str_len $src))
+    (let %result_idx i32 (call $make_list))
+    (let %out (ptr i32) (alloc i32))
+    (local mut $p i32 0)
+    (loop $read_loop
+      (set $p (call $skip_ws $src $p %len))
+      (if (ge.i32 $p %len)
+        (then (br $read_loop))
+        (else
+          (let %child_idx i32 (call $parse_sexp $src $p %len %out))
+          (set $p (load.i32 %out))
+          (call $list_append %result_idx %child_idx))))
+    (free %out)
+    (return %result_idx))
+
+  ;; ── Reader debug ───────────────────────────────────────────
+
+  (func $print_sexp
+    (param $idx i32)
+    (effects io mem div)
+    (intent "Print a SExp tree in s-expression format for debugging")
+    (let %node (ptr $SExp) (call $node_at $idx))
+    (let %tag i32 (load.field %node "tag"))
+    (if (eq.i32 %tag 0)
+      (then (print "%ld" (load.field %node "int_val")))
+      (else (if (eq.i32 %tag 2)
+        (then (print "\"%s\"" (load.field %node "str_val")))
+        (else (if (eq.i32 %tag 3)
+          (then (print "%s" (load.field %node "str_val")))
+          (else (if (eq.i32 %tag 4)
+            (then
+              (print "(")
+              (let %count i32 (load.field %node "count"))
+              (let %children (ptr i32) (load.field %node "children"))
+              (local mut $i i32 0)
+              (loop $pr
+                (if (ge.i32 $i %count)
+                  (then (br $pr))
+                  (else
+                    (if (gt.i32 $i 0) (then (print " ")) (else))
+                    (call $print_sexp (load.i32 (add.i32 %children $i)))
+                    (set $i (add.i32 $i 1)))))
+              (print ")"))
+            (else (print "<?>"))))))))))
+
+  ;; ═══════════════════════════════════════════════════════════
+  ;; SECTION 3: PARSER
+  ;; Transforms SExp tree into validated AST nodes.
+  ;; Reads from: $node_pool (reader's SExp pool)
+  ;; Produces: $ast_pool, $type_pool, $field_pool
+  ;; ═══════════════════════════════════════════════════════════
+
+  ;; ── 3a. Parser globals + pool management ───────────────────
+
+  (global mut $ast_pool   (ptr $ASTNode)  0)
+  (global mut $ast_pos    i32             0)
+  (global mut $type_pool  (ptr $TypeInfo) 0)
+  (global mut $type_pos   i32             0)
+  (global mut $field_pool (ptr $FieldInfo) 0)
+  (global mut $field_pos  i32             0)
+
+  (func $init_parser
+    (effects mem)
+    (intent "Allocate AST, TypeInfo, and FieldInfo pools")
+    (set $ast_pool   (alloc $ASTNode  16384))
+    (set $ast_pos    0)
+    (set $type_pool  (alloc $TypeInfo 4096))
+    (set $type_pos   0)
+    (set $field_pool (alloc $FieldInfo 2048))
+    (set $field_pos  0))
+
+  (func $ast_alloc
+    (result i32)
+    (effects mem io)
+    (intent "Allocate a fresh AST node with default field values, return pool index")
+    (if (ge.i32 $ast_pos 16384)
+      (then (call $trap "AST pool exhausted"))
+      (else))
+    (let %idx i32 $ast_pos)
+    (let %n (ptr $ASTNode) (add.i32 $ast_pool %idx))
+    (store.field %n "tag" 0)
+    (store.field %n "str1" 0)
+    (store.field %n "str2" 0)
+    (store.field %n "int1" 0)
+    (store.field %n "bool1" 0)
+    (store.field %n "type1" -1)
+    (store.field %n "type2" -1)
+    (store.field %n "left" -1)
+    (store.field %n "right" -1)
+    (store.field %n "count" 0)
+    (store.field %n "cap" 0)
+    (store.field %n "count2" 0)
+    (store.field %n "cap2" 0)
+    (set $ast_pos (add.i32 $ast_pos 1))
+    (return %idx))
+
+  (func $ast_at
+    (param $idx i32)
+    (result (ptr $ASTNode))
+    (effects mem)
+    (intent "Get pointer to AST node by pool index")
+    (return (add.i32 $ast_pool $idx)))
+
+  (func $type_alloc
+    (result i32)
+    (effects mem io)
+    (intent "Allocate a fresh TypeInfo node with default values, return pool index")
+    (if (ge.i32 $type_pos 4096)
+      (then (call $trap "Type pool exhausted"))
+      (else))
+    (let %idx i32 $type_pos)
+    (let %t (ptr $TypeInfo) (add.i32 $type_pool %idx))
+    (store.field %t "kind" 0)
+    (store.field %t "name" 0)
+    (store.field %t "inner" -1)
+    (store.field %t "size" 0)
+    (store.field %t "count" 0)
+    (store.field %t "cap" 0)
+    (store.field %t "result" -1)
+    (store.field %t "field_start" 0)
+    (store.field %t "field_count" 0)
+    (set $type_pos (add.i32 $type_pos 1))
+    (return %idx))
+
+  (func $type_at
+    (param $idx i32)
+    (result (ptr $TypeInfo))
+    (effects mem)
+    (intent "Get pointer to TypeInfo node by pool index")
+    (return (add.i32 $type_pool $idx)))
+
+  (func $field_alloc
+    (result i32)
+    (effects mem io)
+    (intent "Allocate a FieldInfo entry for a struct field, return pool index")
+    (if (ge.i32 $field_pos 2048)
+      (then (call $trap "Field pool exhausted"))
+      (else))
+    (let %idx i32 $field_pos)
+    (set $field_pos (add.i32 $field_pos 1))
+    (return %idx))
+
+  (func $field_at
+    (param $idx i32)
+    (result (ptr $FieldInfo))
+    (effects mem)
+    (intent "Get pointer to FieldInfo entry by pool index")
+    (return (add.i32 $field_pool $idx)))
+
+  ;; ── 3b. AST children helpers ───────────────────────────────
+
+  (func $ast_init_children
+    (param $node_idx i32)
+    (effects mem)
+    (intent "Initialize the primary children array on an AST node")
+    (let %n (ptr $ASTNode) (call $ast_at $node_idx))
+    (store.field %n "children" (alloc i32 16))
+    (store.field %n "count" 0)
+    (store.field %n "cap" 16))
+
+  (func $ast_init_children2
+    (param $node_idx i32)
+    (effects mem)
+    (intent "Initialize the secondary children array on an AST node")
+    (let %n (ptr $ASTNode) (call $ast_at $node_idx))
+    (store.field %n "children2" (alloc i32 16))
+    (store.field %n "count2" 0)
+    (store.field %n "cap2" 16))
+
+  (func $ast_push_child
+    (param $node_idx i32)
+    (param $child_idx i32)
+    (effects mem io div)
+    (intent "Append an AST index to the primary children array, growing if needed")
+    (let %node (ptr $ASTNode) (call $ast_at $node_idx))
+    (let %count i32 (load.field %node "count"))
+    (let %cap i32 (load.field %node "cap"))
+    (if (ge.i32 %count %cap)
+      (then
+        (let %new_cap i32 (mul.i32 %cap 2))
+        (let %new_arr (ptr i32) (alloc i32 %new_cap))
+        (let %old_arr (ptr i32) (load.field %node "children"))
+        (local mut $i i32 0)
+        (loop $copy
+          (if (ge.i32 $i %count)
+            (then (br $copy))
+            (else
+              (store.i32 (add.i32 %new_arr $i) (load.i32 (add.i32 %old_arr $i)))
+              (set $i (add.i32 $i 1)))))
+        (free %old_arr)
+        (let %n2 (ptr $ASTNode) (call $ast_at $node_idx))
+        (store.field %n2 "children" %new_arr)
+        (store.field %n2 "cap" %new_cap))
+      (else))
+    (let %n3 (ptr $ASTNode) (call $ast_at $node_idx))
+    (let %arr (ptr i32) (load.field %n3 "children"))
+    (let %cnt i32 (load.field %n3 "count"))
+    (store.i32 (add.i32 %arr %cnt) $child_idx)
+    (store.field %n3 "count" (add.i32 %cnt 1)))
+
+  (func $ast_push_child2
+    (param $node_idx i32)
+    (param $child_idx i32)
+    (effects mem io div)
+    (intent "Append an AST index to the secondary children array, growing if needed")
+    (let %node (ptr $ASTNode) (call $ast_at $node_idx))
+    (let %count i32 (load.field %node "count2"))
+    (let %cap i32 (load.field %node "cap2"))
+    (if (ge.i32 %count %cap)
+      (then
+        (let %new_cap i32 (mul.i32 %cap 2))
+        (let %new_arr (ptr i32) (alloc i32 %new_cap))
+        (let %old_arr (ptr i32) (load.field %node "children2"))
+        (local mut $i i32 0)
+        (loop $copy2
+          (if (ge.i32 $i %count)
+            (then (br $copy2))
+            (else
+              (store.i32 (add.i32 %new_arr $i) (load.i32 (add.i32 %old_arr $i)))
+              (set $i (add.i32 $i 1)))))
+        (free %old_arr)
+        (let %n2 (ptr $ASTNode) (call $ast_at $node_idx))
+        (store.field %n2 "children2" %new_arr)
+        (store.field %n2 "cap2" %new_cap))
+      (else))
+    (let %n3 (ptr $ASTNode) (call $ast_at $node_idx))
+    (let %arr (ptr i32) (load.field %n3 "children2"))
+    (let %cnt i32 (load.field %n3 "count2"))
+    (store.i32 (add.i32 %arr %cnt) $child_idx)
+    (store.field %n3 "count2" (add.i32 %cnt 1)))
+
+  ;; ── 3c. SExp accessor helpers (bridge reader → parser) ─────
+
+  (func $sexp_tag
+    (param $idx i32)
+    (result i32)
+    (effects mem)
+    (intent "Get the tag of a SExp node by index")
+    (return (load.field (call $node_at $idx) "tag")))
+
+  (func $sexp_str
+    (param $idx i32)
+    (result (ptr u8))
+    (effects mem)
+    (intent "Get the string value of a SExp node by index")
+    (return (load.field (call $node_at $idx) "str_val")))
+
+  (func $sexp_int
+    (param $idx i32)
+    (result i64)
+    (effects mem)
+    (intent "Get the integer value of a SExp node by index")
+    (return (load.field (call $node_at $idx) "int_val")))
+
+  (func $sexp_child
+    (param $idx i32)
+    (param $n i32)
+    (result i32)
+    (effects mem)
+    (intent "Get the nth child index of a list SExp node")
+    (let %node (ptr $SExp) (call $node_at $idx))
+    (return (load.i32 (add.i32 (load.field %node "children") $n))))
+
+  (func $sexp_count
+    (param $idx i32)
+    (result i32)
+    (effects mem)
+    (intent "Get the child count of a list SExp node")
+    (return (load.field (call $node_at $idx) "count")))
+
+  ;; ── 3d. String helpers ─────────────────────────────────────
+
+  (func $is_aria_var
+    (param $s (ptr u8))
+    (result i32)
+    (effects mem)
+    (intent "Check if string starts with $ or % (ARIA variable prefix)")
+    (let %c i32 (load.u8 $s))
+    (if (eq.i32 %c 36) (then (return 1)) (else))
+    (if (eq.i32 %c 37) (then (return 1)) (else))
+    (return 0))
+
+  (func $str_find_dot
+    (param $s (ptr u8))
+    (result i32)
+    (effects mem div)
+    (intent "Find position of first dot in string, return -1 if not found")
+    (local mut $i i32 0)
+    (loop $find
+      (let %c i32 (load.u8 (add.i32 $s $i)))
+      (if (eq.i32 %c 0) (then (return -1)) (else))
+      (if (eq.i32 %c 46) (then (return $i)) (else))
+      (set $i (add.i32 $i 1)))
+    (return -1))
+
+  (func $str_copy_range
+    (param $s (ptr u8))
+    (param $start i32)
+    (param $end i32)
+    (result (ptr u8))
+    (effects mem div)
+    (intent "Copy a substring from start to end into a new null-terminated buffer")
+    (let %len i32 (sub.i32 $end $start))
+    (let %buf (ptr u8) (alloc u8 (add.i32 %len 1)))
+    (local mut $i i32 0)
+    (loop $copy
+      (if (ge.i32 $i %len)
+        (then (br $copy))
+        (else
+          (store.u8 (add.i32 %buf $i) (load.u8 (add.i32 $s (add.i32 $start $i))))
+          (set $i (add.i32 $i 1)))))
+    (store.u8 (add.i32 %buf %len) 0)
+    (return %buf))
+
+  ;; ── 3e. Op classification ──────────────────────────────────
+
+  (func $is_binop
+    (param $s (ptr u8))
+    (result i32)
+    (effects mem io)
+    (intent "Check if string is a binary operation name")
+    (if (call $str_eq $s "add") (then (return 1)) (else))
+    (if (call $str_eq $s "sub") (then (return 1)) (else))
+    (if (call $str_eq $s "mul") (then (return 1)) (else))
+    (if (call $str_eq $s "div") (then (return 1)) (else))
+    (if (call $str_eq $s "rem") (then (return 1)) (else))
+    (if (call $str_eq $s "and") (then (return 1)) (else))
+    (if (call $str_eq $s "or")  (then (return 1)) (else))
+    (if (call $str_eq $s "xor") (then (return 1)) (else))
+    (if (call $str_eq $s "shl") (then (return 1)) (else))
+    (if (call $str_eq $s "shr") (then (return 1)) (else))
+    (return 0))
+
+  (func $is_cmpop
+    (param $s (ptr u8))
+    (result i32)
+    (effects mem io)
+    (intent "Check if string is a comparison operation name")
+    (if (call $str_eq $s "eq") (then (return 1)) (else))
+    (if (call $str_eq $s "ne") (then (return 1)) (else))
+    (if (call $str_eq $s "lt") (then (return 1)) (else))
+    (if (call $str_eq $s "le") (then (return 1)) (else))
+    (if (call $str_eq $s "gt") (then (return 1)) (else))
+    (if (call $str_eq $s "ge") (then (return 1)) (else))
+    (return 0))
+
+  (func $is_unaryop
+    (param $s (ptr u8))
+    (result i32)
+    (effects mem io)
+    (intent "Check if string is a unary operation name")
+    (if (call $str_eq $s "neg")   (then (return 1)) (else))
+    (if (call $str_eq $s "not")   (then (return 1)) (else))
+    (if (call $str_eq $s "sqrt")  (then (return 1)) (else))
+    (if (call $str_eq $s "abs")   (then (return 1)) (else))
+    (if (call $str_eq $s "ceil")  (then (return 1)) (else))
+    (if (call $str_eq $s "floor") (then (return 1)) (else))
+    (return 0))
+
+  ;; ── 3f. Type parsing ──────────────────────────────────────
+
+  (func $parse_type
+    (param $sexp_idx i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Parse a SExp into a TypeInfo node: primitives, ptr, array, slice, struct, func")
+    (let %tag i32 (call $sexp_tag $sexp_idx))
+    (if (eq.i32 %tag 3)
+      (then
+        (let %tidx i32 (call $type_alloc))
+        (let %t (ptr $TypeInfo) (call $type_at %tidx))
+        (store.field %t "kind" 0)
+        (store.field %t "name" (call $sexp_str $sexp_idx))
+        (return %tidx))
+      (else))
+    (if (eq.i32 %tag 4)
+      (then
+        (let %head_str (ptr u8) (call $sexp_str (call $sexp_child $sexp_idx 0)))
+        (if (call $str_eq %head_str "ptr")
+          (then
+            (let %tidx i32 (call $type_alloc))
+            (let %t (ptr $TypeInfo) (call $type_at %tidx))
+            (store.field %t "kind" 1)
+            (store.field %t "inner" (call $parse_type (call $sexp_child $sexp_idx 1)))
+            (return %tidx))
+          (else))
+        (if (call $str_eq %head_str "array")
+          (then
+            (let %tidx i32 (call $type_alloc))
+            (let %t (ptr $TypeInfo) (call $type_at %tidx))
+            (store.field %t "kind" 2)
+            (store.field %t "inner" (call $parse_type (call $sexp_child $sexp_idx 1)))
+            (store.field %t "size" (cast i64 i32 (call $sexp_int (call $sexp_child $sexp_idx 2))))
+            (return %tidx))
+          (else))
+        (if (call $str_eq %head_str "slice")
+          (then
+            (let %tidx i32 (call $type_alloc))
+            (let %t (ptr $TypeInfo) (call $type_at %tidx))
+            (store.field %t "kind" 3)
+            (store.field %t "inner" (call $parse_type (call $sexp_child $sexp_idx 1)))
+            (return %tidx))
+          (else))
+        (if (call $str_eq %head_str "struct")
+          (then
+            (let %tidx i32 (call $type_alloc))
+            (let %t (ptr $TypeInfo) (call $type_at %tidx))
+            (store.field %t "kind" 4)
+            (let %sc i32 (call $sexp_count $sexp_idx))
+            (local mut $fi i32 1)
+            (if (eq.i32 (call $sexp_tag (call $sexp_child $sexp_idx 1)) 2)
+              (then
+                (store.field %t "name" (call $sexp_str (call $sexp_child $sexp_idx 1)))
+                (set $fi 2))
+              (else
+                (store.field %t "name" "")))
+            (let %fstart i32 $field_pos)
+            (store.field %t "field_start" %fstart)
+            (loop $fields
+              (if (ge.i32 $fi %sc)
+                (then (br $fields))
+                (else
+                  (let %f_sexp i32 (call $sexp_child $sexp_idx $fi))
+                  (let %f_head (ptr u8) (call $sexp_str (call $sexp_child %f_sexp 0)))
+                  (let %fidx i32 (call $field_alloc))
+                  (let %fi_ptr (ptr $FieldInfo) (call $field_at %fidx))
+                  (if (call $str_eq %f_head "field")
+                    (then
+                      (store.field %fi_ptr "name" (call $sexp_str (call $sexp_child %f_sexp 1)))
+                      (store.field %fi_ptr "type_idx" (call $parse_type (call $sexp_child %f_sexp 2))))
+                    (else
+                      (store.field %fi_ptr "name" %f_head)
+                      (store.field %fi_ptr "type_idx" (call $parse_type (call $sexp_child %f_sexp 1)))))
+                  (set $fi (add.i32 $fi 1)))))
+            (let %t2 (ptr $TypeInfo) (call $type_at %tidx))
+            (store.field %t2 "field_count" (sub.i32 $field_pos %fstart))
+            (return %tidx))
+          (else))
+        (if (call $str_eq %head_str "func")
+          (then
+            (let %tidx i32 (call $type_alloc))
+            (let %t (ptr $TypeInfo) (call $type_at %tidx))
+            (store.field %t "kind" 5)
+            (let %params_sexp i32 (call $sexp_child $sexp_idx 1))
+            (let %pc i32 (call $sexp_count %params_sexp))
+            (store.field %t "children" (alloc i32 %pc))
+            (store.field %t "cap" %pc)
+            (local mut $pi i32 0)
+            (loop $ptypes
+              (if (ge.i32 $pi %pc)
+                (then (br $ptypes))
+                (else
+                  (let %pt i32 (call $parse_type (call $sexp_child %params_sexp $pi)))
+                  (let %t3 (ptr $TypeInfo) (call $type_at %tidx))
+                  (store.i32 (add.i32 (load.field %t3 "children") $pi) %pt)
+                  (set $pi (add.i32 $pi 1)))))
+            (let %t4 (ptr $TypeInfo) (call $type_at %tidx))
+            (store.field %t4 "count" %pc)
+            (store.field %t4 "result" (call $parse_type (call $sexp_child $sexp_idx 2)))
+            (return %tidx))
+          (else))
+        (call $trap "Unknown type constructor")
+        (return -1))
+      (else))
+    (call $trap "Expected type")
+    (return -1))
+
+  ;; ── 3g. Expression parsing ─────────────────────────────────
+
+  (func $parse_binop
+    (param $sexp_idx i32)
+    (param $op (ptr u8))
+    (param $suffix (ptr u8))
+    (result i32)
+    (effects mem io div)
+    (intent "Parse a binary operation like (add.i32 left right) into an AST node")
+    (let %idx i32 (call $ast_alloc))
+    (let %n (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n "tag" 5)
+    (store.field %n "str1" $op)
+    (store.field %n "str2" $suffix)
+    (store.field %n "left" (call $parse_expr (call $sexp_child $sexp_idx 1)))
+    (let %n2 (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n2 "right" (call $parse_expr (call $sexp_child $sexp_idx 2)))
+    (return %idx))
+
+  (func $parse_unaryop
+    (param $sexp_idx i32)
+    (param $op (ptr u8))
+    (param $suffix (ptr u8))
+    (result i32)
+    (effects mem io div)
+    (intent "Parse a unary operation like (neg.i32 operand) into an AST node")
+    (let %idx i32 (call $ast_alloc))
+    (let %n (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n "tag" 6)
+    (store.field %n "str1" $op)
+    (store.field %n "str2" $suffix)
+    (store.field %n "left" (call $parse_expr (call $sexp_child $sexp_idx 1)))
+    (return %idx))
+
+  (func $parse_cmpop
+    (param $sexp_idx i32)
+    (param $op (ptr u8))
+    (param $suffix (ptr u8))
+    (result i32)
+    (effects mem io div)
+    (intent "Parse a comparison like (le.i32 left right) into an AST node")
+    (let %idx i32 (call $ast_alloc))
+    (let %n (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n "tag" 7)
+    (store.field %n "str1" $op)
+    (store.field %n "str2" $suffix)
+    (store.field %n "left" (call $parse_expr (call $sexp_child $sexp_idx 1)))
+    (let %n2 (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n2 "right" (call $parse_expr (call $sexp_child $sexp_idx 2)))
+    (return %idx))
+
+  (func $parse_let
+    (param $sexp_idx i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Parse an immutable let binding: (let %name Type value)")
+    (let %idx i32 (call $ast_alloc))
+    (let %n (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n "tag" 8)
+    (store.field %n "str1" (call $sexp_str (call $sexp_child $sexp_idx 1)))
+    (store.field %n "bool1" 0)
+    (store.field %n "type1" (call $parse_type (call $sexp_child $sexp_idx 2)))
+    (let %n2 (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n2 "left" (call $parse_expr (call $sexp_child $sexp_idx 3)))
+    (return %idx))
+
+  (func $parse_local
+    (param $sexp_idx i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Parse a mutable local variable: (local [mut] $var Type [init])")
+    (let %idx i32 (call $ast_alloc))
+    (let %n (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n "tag" 8)
+    (store.field %n "bool1" 1)
+    (let %sc i32 (call $sexp_count $sexp_idx))
+    (let %c1_tag i32 (call $sexp_tag (call $sexp_child $sexp_idx 1)))
+    (if (eq.i32 %c1_tag 3)
+      (then
+        (if (call $str_eq (call $sexp_str (call $sexp_child $sexp_idx 1)) "mut")
+          (then
+            (store.field %n "str1" (call $sexp_str (call $sexp_child $sexp_idx 2)))
+            (store.field %n "type1" (call $parse_type (call $sexp_child $sexp_idx 3)))
+            (if (gt.i32 %sc 4)
+              (then
+                (let %n2 (ptr $ASTNode) (call $ast_at %idx))
+                (store.field %n2 "left" (call $parse_expr (call $sexp_child $sexp_idx 4))))
+              (else)))
+          (else
+            (store.field %n "str1" (call $sexp_str (call $sexp_child $sexp_idx 1)))
+            (store.field %n "type1" (call $parse_type (call $sexp_child $sexp_idx 2)))
+            (if (gt.i32 %sc 3)
+              (then
+                (let %n3 (ptr $ASTNode) (call $ast_at %idx))
+                (store.field %n3 "left" (call $parse_expr (call $sexp_child $sexp_idx 3))))
+              (else)))))
+      (else))
+    (return %idx))
+
+  (func $parse_set
+    (param $sexp_idx i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Parse a variable mutation: (set $var expr)")
+    (let %idx i32 (call $ast_alloc))
+    (let %n (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n "tag" 9)
+    (store.field %n "str1" (call $sexp_str (call $sexp_child $sexp_idx 1)))
+    (store.field %n "left" (call $parse_expr (call $sexp_child $sexp_idx 2)))
+    (return %idx))
+
+  (func $parse_call
+    (param $sexp_idx i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Parse a function call: (call $target arg1 arg2 ...)")
+    (let %idx i32 (call $ast_alloc))
+    (let %n (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n "tag" 10)
+    (store.field %n "str1" (call $sexp_str (call $sexp_child $sexp_idx 1)))
+    (let %sc i32 (call $sexp_count $sexp_idx))
+    (if (gt.i32 %sc 2)
+      (then
+        (call $ast_init_children %idx)
+        (local mut $ai i32 2)
+        (loop $args
+          (if (ge.i32 $ai %sc)
+            (then (br $args))
+            (else
+              (call $ast_push_child %idx (call $parse_expr (call $sexp_child $sexp_idx $ai)))
+              (set $ai (add.i32 $ai 1))))))
+      (else))
+    (return %idx))
+
+  (func $parse_return
+    (param $sexp_idx i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Parse a return statement: (return [expr])")
+    (let %idx i32 (call $ast_alloc))
+    (let %n (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n "tag" 11)
+    (if (gt.i32 (call $sexp_count $sexp_idx) 1)
+      (then
+        (store.field %n "left" (call $parse_expr (call $sexp_child $sexp_idx 1))))
+      (else))
+    (return %idx))
+
+  (func $parse_if
+    (param $sexp_idx i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Parse an if expression: (if cond (then ...) (else ...))")
+    (let %idx i32 (call $ast_alloc))
+    (let %n (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n "tag" 12)
+    (store.field %n "left" (call $parse_expr (call $sexp_child $sexp_idx 1)))
+    (let %then_sexp i32 (call $sexp_child $sexp_idx 2))
+    (let %then_count i32 (call $sexp_count %then_sexp))
+    (call $ast_init_children %idx)
+    (local mut $ti i32 1)
+    (loop $then_loop
+      (if (ge.i32 $ti %then_count)
+        (then (br $then_loop))
+        (else
+          (call $ast_push_child %idx (call $parse_expr (call $sexp_child %then_sexp $ti)))
+          (set $ti (add.i32 $ti 1)))))
+    (if (gt.i32 (call $sexp_count $sexp_idx) 3)
+      (then
+        (let %else_sexp i32 (call $sexp_child $sexp_idx 3))
+        (let %else_count i32 (call $sexp_count %else_sexp))
+        (call $ast_init_children2 %idx)
+        (local mut $ei i32 1)
+        (loop $else_loop
+          (if (ge.i32 $ei %else_count)
+            (then (br $else_loop))
+            (else
+              (call $ast_push_child2 %idx (call $parse_expr (call $sexp_child %else_sexp $ei)))
+              (set $ei (add.i32 $ei 1))))))
+      (else))
+    (return %idx))
+
+  (func $parse_loop
+    (param $sexp_idx i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Parse a loop construct: (loop [$label] body...)")
+    (let %idx i32 (call $ast_alloc))
+    (let %n (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n "tag" 13)
+    (let %sc i32 (call $sexp_count $sexp_idx))
+    (call $ast_init_children %idx)
+    (local mut $bi i32 1)
+    (let %c1_str (ptr u8) (call $sexp_str (call $sexp_child $sexp_idx 1)))
+    (if (call $is_aria_var %c1_str)
+      (then
+        (store.field %n "str1" %c1_str)
+        (set $bi 2))
+      (else
+        (store.field %n "str1" "")))
+    (loop $body
+      (if (ge.i32 $bi %sc)
+        (then (br $body))
+        (else
+          (call $ast_push_child %idx (call $parse_expr (call $sexp_child $sexp_idx $bi)))
+          (set $bi (add.i32 $bi 1)))))
+    (return %idx))
+
+  (func $parse_block
+    (param $sexp_idx i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Parse a block construct: (block [$label] body...)")
+    (let %idx i32 (call $ast_alloc))
+    (let %n (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n "tag" 14)
+    (let %sc i32 (call $sexp_count $sexp_idx))
+    (call $ast_init_children %idx)
+    (local mut $bi i32 1)
+    (let %c1_str (ptr u8) (call $sexp_str (call $sexp_child $sexp_idx 1)))
+    (if (call $is_aria_var %c1_str)
+      (then
+        (store.field %n "str1" %c1_str)
+        (set $bi 2))
+      (else
+        (store.field %n "str1" "")))
+    (loop $body
+      (if (ge.i32 $bi %sc)
+        (then (br $body))
+        (else
+          (call $ast_push_child %idx (call $parse_expr (call $sexp_child $sexp_idx $bi)))
+          (set $bi (add.i32 $bi 1)))))
+    (return %idx))
+
+  (func $parse_br
+    (param $sexp_idx i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Parse an unconditional branch: (br $label)")
+    (let %idx i32 (call $ast_alloc))
+    (let %n (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n "tag" 15)
+    (store.field %n "str1" (call $sexp_str (call $sexp_child $sexp_idx 1)))
+    (return %idx))
+
+  (func $parse_br_if
+    (param $sexp_idx i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Parse a conditional branch: (br_if cond $label)")
+    (let %idx i32 (call $ast_alloc))
+    (let %n (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n "tag" 16)
+    (store.field %n "left" (call $parse_expr (call $sexp_child $sexp_idx 1)))
+    (let %n2 (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n2 "str1" (call $sexp_str (call $sexp_child $sexp_idx 2)))
+    (return %idx))
+
+  (func $parse_alloc
+    (param $sexp_idx i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Parse a memory allocation: (alloc Type [count])")
+    (let %idx i32 (call $ast_alloc))
+    (let %n (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n "tag" 17)
+    (store.field %n "type1" (call $parse_type (call $sexp_child $sexp_idx 1)))
+    (if (gt.i32 (call $sexp_count $sexp_idx) 2)
+      (then
+        (let %n2 (ptr $ASTNode) (call $ast_at %idx))
+        (store.field %n2 "left" (call $parse_expr (call $sexp_child $sexp_idx 2))))
+      (else))
+    (return %idx))
+
+  (func $parse_free
+    (param $sexp_idx i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Parse a memory deallocation: (free ptr)")
+    (let %idx i32 (call $ast_alloc))
+    (let %n (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n "tag" 18)
+    (store.field %n "left" (call $parse_expr (call $sexp_child $sexp_idx 1)))
+    (return %idx))
+
+  (func $parse_load
+    (param $sexp_idx i32)
+    (param $suffix (ptr u8))
+    (result i32)
+    (effects mem io div)
+    (intent "Parse a typed memory load: (load.TYPE ptr)")
+    (let %idx i32 (call $ast_alloc))
+    (let %n (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n "tag" 19)
+    (store.field %n "str2" $suffix)
+    (store.field %n "left" (call $parse_expr (call $sexp_child $sexp_idx 1)))
+    (return %idx))
+
+  (func $parse_store
+    (param $sexp_idx i32)
+    (param $suffix (ptr u8))
+    (result i32)
+    (effects mem io div)
+    (intent "Parse a typed memory store: (store.TYPE ptr value)")
+    (let %idx i32 (call $ast_alloc))
+    (let %n (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n "tag" 20)
+    (store.field %n "str2" $suffix)
+    (store.field %n "left" (call $parse_expr (call $sexp_child $sexp_idx 1)))
+    (let %n2 (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n2 "right" (call $parse_expr (call $sexp_child $sexp_idx 2)))
+    (return %idx))
+
+  (func $parse_load_field
+    (param $sexp_idx i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Parse a struct field load: (load.field ptr \"fieldname\")")
+    (let %idx i32 (call $ast_alloc))
+    (let %n (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n "tag" 21)
+    (store.field %n "left" (call $parse_expr (call $sexp_child $sexp_idx 1)))
+    (let %n2 (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n2 "str2" (call $sexp_str (call $sexp_child $sexp_idx 2)))
+    (return %idx))
+
+  (func $parse_store_field
+    (param $sexp_idx i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Parse a struct field store: (store.field ptr \"fieldname\" value)")
+    (let %idx i32 (call $ast_alloc))
+    (let %n (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n "tag" 22)
+    (store.field %n "left" (call $parse_expr (call $sexp_child $sexp_idx 1)))
+    (let %n2 (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n2 "str2" (call $sexp_str (call $sexp_child $sexp_idx 2)))
+    (store.field %n2 "right" (call $parse_expr (call $sexp_child $sexp_idx 3)))
+    (return %idx))
+
+  (func $parse_cast
+    (param $sexp_idx i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Parse a type cast: (cast FromType ToType expr)")
+    (let %idx i32 (call $ast_alloc))
+    (let %n (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n "tag" 23)
+    (store.field %n "type1" (call $parse_type (call $sexp_child $sexp_idx 1)))
+    (let %n2 (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n2 "type2" (call $parse_type (call $sexp_child $sexp_idx 2)))
+    (let %n3 (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n3 "left" (call $parse_expr (call $sexp_child $sexp_idx 3)))
+    (return %idx))
+
+  (func $parse_print_stmt
+    (param $sexp_idx i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Parse a print statement: (print \"fmt\" arg1 arg2 ...)")
+    (let %idx i32 (call $ast_alloc))
+    (let %n (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n "tag" 24)
+    (store.field %n "str1" (call $sexp_str (call $sexp_child $sexp_idx 1)))
+    (let %sc i32 (call $sexp_count $sexp_idx))
+    (if (gt.i32 %sc 2)
+      (then
+        (call $ast_init_children %idx)
+        (local mut $ai i32 2)
+        (loop $args
+          (if (ge.i32 $ai %sc)
+            (then (br $args))
+            (else
+              (call $ast_push_child %idx (call $parse_expr (call $sexp_child $sexp_idx $ai)))
+              (set $ai (add.i32 $ai 1))))))
+      (else))
+    (return %idx))
+
+  (func $parse_intent
+    (param $sexp_idx i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Parse an intent annotation: (intent \"description\")")
+    (let %idx i32 (call $ast_alloc))
+    (let %n (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n "tag" 25)
+    (store.field %n "str1" (call $sexp_str (call $sexp_child $sexp_idx 1)))
+    (return %idx))
+
+  (func $parse_seq
+    (param $sexp_idx i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Parse a sequence block: (seq body...)")
+    (let %idx i32 (call $ast_alloc))
+    (let %n (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n "tag" 26)
+    (let %sc i32 (call $sexp_count $sexp_idx))
+    (call $ast_init_children %idx)
+    (local mut $bi i32 1)
+    (loop $body
+      (if (ge.i32 $bi %sc)
+        (then (br $body))
+        (else
+          (call $ast_push_child %idx (call $parse_expr (call $sexp_child $sexp_idx $bi)))
+          (set $bi (add.i32 $bi 1)))))
+    (return %idx))
+
+  ;; ── Form dispatch ──────────────────────────────────────────
+
+  (func $parse_form_dotted
+    (param $sexp_idx i32)
+    (param $head_str (ptr u8))
+    (param $dot_pos i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Dispatch a dotted form like add.i32 or load.field to the right parser")
+    (let %base (ptr u8) (call $str_copy_range $head_str 0 $dot_pos))
+    (let %suffix (ptr u8) (call $str_copy_range $head_str (add.i32 $dot_pos 1) (call $str_len $head_str)))
+    (if (call $is_binop %base)
+      (then (return (call $parse_binop $sexp_idx %base %suffix)))
+      (else))
+    (if (call $is_cmpop %base)
+      (then (return (call $parse_cmpop $sexp_idx %base %suffix)))
+      (else))
+    (if (call $is_unaryop %base)
+      (then (return (call $parse_unaryop $sexp_idx %base %suffix)))
+      (else))
+    (if (call $str_eq %base "load")
+      (then
+        (if (call $str_eq %suffix "field")
+          (then (return (call $parse_load_field $sexp_idx)))
+          (else (return (call $parse_load $sexp_idx %suffix)))))
+      (else))
+    (if (call $str_eq %base "store")
+      (then
+        (if (call $str_eq %suffix "field")
+          (then (return (call $parse_store_field $sexp_idx)))
+          (else (return (call $parse_store $sexp_idx %suffix)))))
+      (else))
+    (print "Unknown dotted form: %s\n" $head_str)
+    (call $trap "Unknown dotted form")
+    (return -1))
+
+  (func $parse_form_keyword
+    (param $sexp_idx i32)
+    (param $head_str (ptr u8))
+    (result i32)
+    (effects mem io div)
+    (intent "Dispatch a keyword form like let, call, if to the right parser")
+    (if (call $str_eq $head_str "let")    (then (return (call $parse_let $sexp_idx)))    (else))
+    (if (call $str_eq $head_str "local")  (then (return (call $parse_local $sexp_idx)))  (else))
+    (if (call $str_eq $head_str "set")    (then (return (call $parse_set $sexp_idx)))    (else))
+    (if (call $str_eq $head_str "call")   (then (return (call $parse_call $sexp_idx)))   (else))
+    (if (call $str_eq $head_str "return") (then (return (call $parse_return $sexp_idx))) (else))
+    (if (call $str_eq $head_str "if")     (then (return (call $parse_if $sexp_idx)))     (else))
+    (if (call $str_eq $head_str "loop")   (then (return (call $parse_loop $sexp_idx)))   (else))
+    (if (call $str_eq $head_str "block")  (then (return (call $parse_block $sexp_idx)))  (else))
+    (if (call $str_eq $head_str "br")     (then (return (call $parse_br $sexp_idx)))     (else))
+    (if (call $str_eq $head_str "br_if")  (then (return (call $parse_br_if $sexp_idx)))  (else))
+    (if (call $str_eq $head_str "alloc")  (then (return (call $parse_alloc $sexp_idx)))  (else))
+    (if (call $str_eq $head_str "free")   (then (return (call $parse_free $sexp_idx)))   (else))
+    (if (call $str_eq $head_str "cast")   (then (return (call $parse_cast $sexp_idx)))   (else))
+    (if (call $str_eq $head_str "print")  (then (return (call $parse_print_stmt $sexp_idx))) (else))
+    (if (call $str_eq $head_str "intent") (then (return (call $parse_intent $sexp_idx))) (else))
+    (if (call $str_eq $head_str "seq")    (then (return (call $parse_seq $sexp_idx)))    (else))
+    (print "Unknown form: %s\n" $head_str)
+    (call $trap "Unknown form")
+    (return -1))
+
+  (func $parse_form
+    (param $sexp_idx i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Dispatch a list SExp to dotted or keyword form parser")
+    (let %head_idx i32 (call $sexp_child $sexp_idx 0))
+    (let %head_str (ptr u8) (call $sexp_str %head_idx))
+    (let %dot_pos i32 (call $str_find_dot %head_str))
+    (if (eq.i32 %dot_pos -1)
+      (then (return (call $parse_form_keyword $sexp_idx %head_str)))
+      (else (return (call $parse_form_dotted $sexp_idx %head_str %dot_pos)))))
+
+  (func $parse_expr
+    (param $sexp_idx i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Parse any expression SExp: literal, variable, boolean, or list form")
+    (let %tag i32 (call $sexp_tag $sexp_idx))
+    (if (eq.i32 %tag 0)
+      (then
+        (let %idx i32 (call $ast_alloc))
+        (let %n (ptr $ASTNode) (call $ast_at %idx))
+        (store.field %n "tag" 0)
+        (store.field %n "int1" (call $sexp_int $sexp_idx))
+        (return %idx))
+      (else))
+    (if (eq.i32 %tag 2)
+      (then
+        (let %idx i32 (call $ast_alloc))
+        (let %n (ptr $ASTNode) (call $ast_at %idx))
+        (store.field %n "tag" 3)
+        (store.field %n "str1" (call $sexp_str $sexp_idx))
+        (return %idx))
+      (else))
+    (if (eq.i32 %tag 3)
+      (then
+        (let %s (ptr u8) (call $sexp_str $sexp_idx))
+        (if (call $str_eq %s "true")
+          (then
+            (let %idx i32 (call $ast_alloc))
+            (let %n (ptr $ASTNode) (call $ast_at %idx))
+            (store.field %n "tag" 2)
+            (store.field %n "bool1" 1)
+            (return %idx))
+          (else))
+        (if (call $str_eq %s "false")
+          (then
+            (let %idx i32 (call $ast_alloc))
+            (let %n (ptr $ASTNode) (call $ast_at %idx))
+            (store.field %n "tag" 2)
+            (store.field %n "bool1" 0)
+            (return %idx))
+          (else))
+        (let %idx i32 (call $ast_alloc))
+        (let %n (ptr $ASTNode) (call $ast_at %idx))
+        (store.field %n "tag" 4)
+        (store.field %n "str1" %s)
+        (return %idx))
+      (else))
+    (if (eq.i32 %tag 4)
+      (then (return (call $parse_form $sexp_idx)))
+      (else))
+    (call $trap "Unexpected expression")
+    (return -1))
+
+  ;; ── 3h. Top-level parsing ──────────────────────────────────
+
+  (func $parse_param
+    (param $sexp_idx i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Parse a function parameter: (param $name Type)")
+    (let %idx i32 (call $ast_alloc))
+    (let %n (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n "tag" 27)
+    (store.field %n "str1" (call $sexp_str (call $sexp_child $sexp_idx 1)))
+    (store.field %n "type1" (call $parse_type (call $sexp_child $sexp_idx 2)))
+    (return %idx))
+
+  (func $parse_function
+    (param $sexp_idx i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Parse a function definition with params, result, effects, intent, and body")
+    (let %idx i32 (call $ast_alloc))
+    (let %n (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n "tag" 28)
+    (store.field %n "str1" (call $sexp_str (call $sexp_child $sexp_idx 1)))
+    (call $ast_init_children %idx)
+    (let %sc i32 (call $sexp_count $sexp_idx))
+    (local mut $param_count i32 0)
+    (local mut $effects_bits i32 0)
+    (local mut $pi i32 2)
+    (loop $parts
+      (if (ge.i32 $pi %sc)
+        (then (br $parts))
+        (else
+          (let %part i32 (call $sexp_child $sexp_idx $pi))
+          (let %ptag i32 (call $sexp_tag %part))
+          (if (eq.i32 %ptag 4)
+            (then
+              (let %pkw (ptr u8) (call $sexp_str (call $sexp_child %part 0)))
+              (if (call $str_eq %pkw "param")
+                (then
+                  (call $ast_push_child %idx (call $parse_param %part))
+                  (set $param_count (add.i32 $param_count 1)))
+                (else (if (call $str_eq %pkw "result")
+                  (then
+                    (let %fn (ptr $ASTNode) (call $ast_at %idx))
+                    (store.field %fn "type1" (call $parse_type (call $sexp_child %part 1))))
+                  (else (if (call $str_eq %pkw "effects")
+                    (then
+                      (let %ec i32 (call $sexp_count %part))
+                      (local mut $ei i32 1)
+                      (loop $effs
+                        (if (ge.i32 $ei %ec)
+                          (then (br $effs))
+                          (else
+                            (let %eff_name (ptr u8) (call $sexp_str (call $sexp_child %part $ei)))
+                            (if (call $str_eq %eff_name "pure") (then (set $effects_bits (or.i32 $effects_bits 1))) (else))
+                            (if (call $str_eq %eff_name "mem")  (then (set $effects_bits (or.i32 $effects_bits 2))) (else))
+                            (if (call $str_eq %eff_name "io")   (then (set $effects_bits (or.i32 $effects_bits 4))) (else))
+                            (if (call $str_eq %eff_name "div")  (then (set $effects_bits (or.i32 $effects_bits 8))) (else))
+                            (set $ei (add.i32 $ei 1))))))
+                    (else (if (call $str_eq %pkw "intent")
+                      (then
+                        (let %fn2 (ptr $ASTNode) (call $ast_at %idx))
+                        (store.field %fn2 "str2" (call $sexp_str (call $sexp_child %part 1))))
+                      (else
+                        (call $ast_push_child %idx (call $parse_expr %part)))))))))))
+            (else
+              (call $ast_push_child %idx (call $parse_expr %part))))
+          (set $pi (add.i32 $pi 1)))))
+    (let %fn3 (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %fn3 "int1" (cast i32 i64 $param_count))
+    (store.field %fn3 "bool1" $effects_bits)
+    (return %idx))
+
+  (func $parse_global
+    (param $sexp_idx i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Parse a global variable: (global [mut] $name Type [init])")
+    (let %idx i32 (call $ast_alloc))
+    (let %n (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n "tag" 29)
+    (let %sc i32 (call $sexp_count $sexp_idx))
+    (let %c1 (ptr u8) (call $sexp_str (call $sexp_child $sexp_idx 1)))
+    (if (call $str_eq %c1 "mut")
+      (then
+        (store.field %n "bool1" 1)
+        (store.field %n "str1" (call $sexp_str (call $sexp_child $sexp_idx 2)))
+        (store.field %n "type1" (call $parse_type (call $sexp_child $sexp_idx 3)))
+        (if (gt.i32 %sc 4)
+          (then
+            (let %n2 (ptr $ASTNode) (call $ast_at %idx))
+            (store.field %n2 "left" (call $parse_expr (call $sexp_child $sexp_idx 4))))
+          (else)))
+      (else
+        (store.field %n "bool1" 0)
+        (store.field %n "str1" %c1)
+        (store.field %n "type1" (call $parse_type (call $sexp_child $sexp_idx 2)))
+        (if (gt.i32 %sc 3)
+          (then
+            (let %n3 (ptr $ASTNode) (call $ast_at %idx))
+            (store.field %n3 "left" (call $parse_expr (call $sexp_child $sexp_idx 3))))
+          (else))))
+    (return %idx))
+
+  (func $parse_typedef
+    (param $sexp_idx i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Parse a type definition: (type $Name TypeForm)")
+    (let %idx i32 (call $ast_alloc))
+    (let %n (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n "tag" 30)
+    (store.field %n "str1" (call $sexp_str (call $sexp_child $sexp_idx 1)))
+    (store.field %n "type1" (call $parse_type (call $sexp_child $sexp_idx 2)))
+    (return %idx))
+
+  (func $parse_export_decl
+    (param $sexp_idx i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Parse an export declaration: (export $name [\"alias\"])")
+    (let %idx i32 (call $ast_alloc))
+    (let %n (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n "tag" 31)
+    (store.field %n "str1" (call $sexp_str (call $sexp_child $sexp_idx 1)))
+    (if (gt.i32 (call $sexp_count $sexp_idx) 2)
+      (then
+        (store.field %n "str2" (call $sexp_str (call $sexp_child $sexp_idx 2))))
+      (else))
+    (return %idx))
+
+  (func $parse_extern_decl
+    (param $sexp_idx i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Parse an extern function declaration: (extern \"module\" $name (param ...) (result Type)?)")
+    (let %idx i32 (call $ast_alloc))
+    (let %n (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n "tag" 32)
+    (store.field %n "str2" (call $sexp_str (call $sexp_child $sexp_idx 1)))
+    (store.field %n "str1" (call $sexp_str (call $sexp_child $sexp_idx 2)))
+    (let %sc i32 (call $sexp_count $sexp_idx))
+    (call $ast_init_children %idx)
+    (local mut $ei i32 3)
+    (loop $ext_parts
+      (if (ge.i32 $ei %sc)
+        (then (br $ext_parts))
+        (else
+          (let %part i32 (call $sexp_child $sexp_idx $ei))
+          (if (eq.i32 (call $sexp_tag %part) 4)
+            (then
+              (let %pkw (ptr u8) (call $sexp_str (call $sexp_child %part 0)))
+              (if (call $str_eq %pkw "param")
+                (then (call $ast_push_child %idx (call $parse_param %part)))
+                (else (if (call $str_eq %pkw "result")
+                  (then
+                    (let %en (ptr $ASTNode) (call $ast_at %idx))
+                    (store.field %en "type1" (call $parse_type (call $sexp_child %part 1))))
+                  (else)))))
+            (else))
+          (set $ei (add.i32 $ei 1)))))
+    (return %idx))
+
+  (func $parse_module
+    (param $sexp_idx i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Parse a complete ARIA module: (module \"name\" top-level-forms...)")
+    (let %idx i32 (call $ast_alloc))
+    (let %n (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n "tag" 33)
+    (let %head (ptr u8) (call $sexp_str (call $sexp_child $sexp_idx 0)))
+    (if (call $str_eq %head "module")
+      (then)
+      (else (call $trap "Expected (module ...) at top level")))
+    (if (eq.i32 (call $sexp_tag (call $sexp_child $sexp_idx 1)) 2)
+      (then)
+      (else (call $trap "Module name must be a string")))
+    (store.field %n "str1" (call $sexp_str (call $sexp_child $sexp_idx 1)))
+    (call $ast_init_children %idx)
+    (call $ast_init_children2 %idx)
+    (local mut $type_count i32 0)
+    (local mut $global_count i32 0)
+    (local mut $func_count i32 0)
+    (local mut $export_count i32 0)
+    (let %sc i32 (call $sexp_count $sexp_idx))
+    (local mut $mi i32 2)
+    (loop $top_forms
+      (if (ge.i32 $mi %sc)
+        (then (br $top_forms))
+        (else
+          (let %form i32 (call $sexp_child $sexp_idx $mi))
+          (if (eq.i32 (call $sexp_tag %form) 4)
+            (then
+              (let %kw (ptr u8) (call $sexp_str (call $sexp_child %form 0)))
+              (if (call $str_eq %kw "func")
+                (then
+                  (call $ast_push_child %idx (call $parse_function %form))
+                  (set $func_count (add.i32 $func_count 1)))
+                (else (if (call $str_eq %kw "global")
+                  (then
+                    (call $ast_push_child %idx (call $parse_global %form))
+                    (set $global_count (add.i32 $global_count 1)))
+                  (else (if (call $str_eq %kw "type")
+                    (then
+                      (call $ast_push_child %idx (call $parse_typedef %form))
+                      (set $type_count (add.i32 $type_count 1)))
+                    (else (if (call $str_eq %kw "export")
+                      (then
+                        (call $ast_push_child2 %idx (call $parse_export_decl %form))
+                        (set $export_count (add.i32 $export_count 1)))
+                      (else (if (call $str_eq %kw "extern")
+                        (then
+                          (call $ast_push_child2 %idx (call $parse_extern_decl %form)))
+                        (else (if (call $str_eq %kw "metadata")
+                          (then)
+                          (else
+                            (print "Unknown top-level form: %s\n" %kw)
+                            (call $trap "Unknown top-level form"))))))))))))))
+            (else))
+          (set $mi (add.i32 $mi 1)))))
+    (let %mn (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %mn "int1" (cast i32 i64 $type_count))
+    (store.field %mn "bool1" $global_count)
+    (store.field %mn "type1" $func_count)
+    (store.field %mn "type2" $export_count)
+    (return %idx))
+
+  ;; ═══════════════════════════════════════════════════════════
+  ;; SECTION 4: DEBUG + MAIN
+  ;; Printers for TypeInfo and AST nodes, test entry point.
+  ;; ═══════════════════════════════════════════════════════════
+
+  ;; ── Type printer ───────────────────────────────────────────
+
+  (func $print_type
+    (param $tidx i32)
+    (effects io mem div)
+    (intent "Print a TypeInfo node in human-readable s-expression format")
+    (if (eq.i32 $tidx -1) (then (print "void") (return)) (else))
+    (let %t (ptr $TypeInfo) (call $type_at $tidx))
+    (let %kind i32 (load.field %t "kind"))
+    (if (eq.i32 %kind 0)
+      (then (print "%s" (load.field %t "name")) (return))
+      (else))
+    (if (eq.i32 %kind 1)
+      (then (print "(ptr ") (call $print_type (load.field %t "inner")) (print ")") (return))
+      (else))
+    (if (eq.i32 %kind 2)
+      (then (print "(array ") (call $print_type (load.field %t "inner")) (print " %d)" (load.field %t "size")) (return))
+      (else))
+    (if (eq.i32 %kind 3)
+      (then (print "(slice ") (call $print_type (load.field %t "inner")) (print ")") (return))
+      (else))
+    (if (eq.i32 %kind 4)
+      (then
+        (print "(struct")
+        (let %fc i32 (load.field %t "field_count"))
+        (let %fs i32 (load.field %t "field_start"))
+        (local mut $fi i32 0)
+        (loop $pf
+          (if (ge.i32 $fi %fc)
+            (then (br $pf))
+            (else
+              (let %fld (ptr $FieldInfo) (call $field_at (add.i32 %fs $fi)))
+              (print " (field %s " (load.field %fld "name"))
+              (call $print_type (load.field %fld "type_idx"))
+              (print ")")
+              (set $fi (add.i32 $fi 1)))))
+        (print ")") (return))
+      (else))
+    (print "<type?>"))
+
+  ;; ── AST printer ────────────────────────────────────────────
+
+  (func $print_ast
+    (param $aidx i32)
+    (effects io mem div)
+    (intent "Print an AST node tree in human-readable s-expression format")
+    (if (eq.i32 $aidx -1) (then (return)) (else))
+    (let %n (ptr $ASTNode) (call $ast_at $aidx))
+    (let %tag i32 (load.field %n "tag"))
+    (if (eq.i32 %tag 0)
+      (then (print "%ld" (load.field %n "int1")) (return))
+      (else))
+    (if (eq.i32 %tag 2)
+      (then
+        (if (load.field %n "bool1") (then (print "true")) (else (print "false")))
+        (return))
+      (else))
+    (if (eq.i32 %tag 3)
+      (then (print "\"%s\"" (load.field %n "str1")) (return))
+      (else))
+    (if (eq.i32 %tag 4)
+      (then (print "%s" (load.field %n "str1")) (return))
+      (else))
+    (if (eq.i32 %tag 5)
+      (then
+        (print "(%s" (load.field %n "str1"))
+        (if (load.field %n "str2") (then (print ".%s" (load.field %n "str2"))) (else))
+        (print " ") (call $print_ast (load.field %n "left"))
+        (print " ") (call $print_ast (load.field %n "right"))
+        (print ")") (return))
+      (else))
+    (if (eq.i32 %tag 6)
+      (then
+        (print "(%s" (load.field %n "str1"))
+        (if (load.field %n "str2") (then (print ".%s" (load.field %n "str2"))) (else))
+        (print " ") (call $print_ast (load.field %n "left"))
+        (print ")") (return))
+      (else))
+    (if (eq.i32 %tag 7)
+      (then
+        (print "(%s" (load.field %n "str1"))
+        (if (load.field %n "str2") (then (print ".%s" (load.field %n "str2"))) (else))
+        (print " ") (call $print_ast (load.field %n "left"))
+        (print " ") (call $print_ast (load.field %n "right"))
+        (print ")") (return))
+      (else))
+    (if (eq.i32 %tag 8)
+      (then
+        (if (load.field %n "bool1") (then (print "(local mut ")) (else (print "(let ")))
+        (print "%s " (load.field %n "str1"))
+        (call $print_type (load.field %n "type1"))
+        (if (ne.i32 (load.field %n "left") -1)
+          (then (print " ") (call $print_ast (load.field %n "left")))
+          (else))
+        (print ")") (return))
+      (else))
+    (if (eq.i32 %tag 9)
+      (then
+        (print "(set %s " (load.field %n "str1"))
+        (call $print_ast (load.field %n "left"))
+        (print ")") (return))
+      (else))
+    (if (eq.i32 %tag 10)
+      (then
+        (print "(call %s" (load.field %n "str1"))
+        (let %ac i32 (load.field %n "count"))
+        (if (gt.i32 %ac 0)
+          (then
+            (let %arr (ptr i32) (load.field %n "children"))
+            (local mut $ai i32 0)
+            (loop $pargs
+              (if (ge.i32 $ai %ac) (then (br $pargs))
+                (else (print " ") (call $print_ast (load.i32 (add.i32 %arr $ai)))
+                  (set $ai (add.i32 $ai 1))))))
+          (else))
+        (print ")") (return))
+      (else))
+    (if (eq.i32 %tag 11)
+      (then
+        (print "(return")
+        (if (ne.i32 (load.field %n "left") -1)
+          (then (print " ") (call $print_ast (load.field %n "left")))
+          (else))
+        (print ")") (return))
+      (else))
+    (if (eq.i32 %tag 12)
+      (then
+        (print "(if ") (call $print_ast (load.field %n "left")) (print " (then")
+        (let %tc i32 (load.field %n "count"))
+        (let %tarr (ptr i32) (load.field %n "children"))
+        (local mut $ti i32 0)
+        (loop $pthen
+          (if (ge.i32 $ti %tc) (then (br $pthen))
+            (else (print " ") (call $print_ast (load.i32 (add.i32 %tarr $ti)))
+              (set $ti (add.i32 $ti 1)))))
+        (print ")")
+        (let %ec i32 (load.field %n "count2"))
+        (if (gt.i32 %ec 0)
+          (then
+            (print " (else")
+            (let %earr (ptr i32) (load.field %n "children2"))
+            (local mut $ei i32 0)
+            (loop $pelse
+              (if (ge.i32 $ei %ec) (then (br $pelse))
+                (else (print " ") (call $print_ast (load.i32 (add.i32 %earr $ei)))
+                  (set $ei (add.i32 $ei 1)))))
+            (print ")"))
+          (else))
+        (print ")") (return))
+      (else))
+    (if (eq.i32 %tag 13)
+      (then
+        (print "(loop %s" (load.field %n "str1"))
+        (let %bc i32 (load.field %n "count"))
+        (let %barr (ptr i32) (load.field %n "children"))
+        (local mut $bi i32 0)
+        (loop $pbody
+          (if (ge.i32 $bi %bc) (then (br $pbody))
+            (else (print " ") (call $print_ast (load.i32 (add.i32 %barr $bi)))
+              (set $bi (add.i32 $bi 1)))))
+        (print ")") (return))
+      (else))
+    (if (eq.i32 %tag 15)
+      (then (print "(br %s)" (load.field %n "str1")) (return))
+      (else))
+    (if (eq.i32 %tag 16)
+      (then
+        (print "(br_if ") (call $print_ast (load.field %n "left"))
+        (print " %s)" (load.field %n "str1")) (return))
+      (else))
+    (if (eq.i32 %tag 24)
+      (then
+        (print "(print \"%s\"" (load.field %n "str1"))
+        (let %pc i32 (load.field %n "count"))
+        (if (gt.i32 %pc 0)
+          (then
+            (let %parr (ptr i32) (load.field %n "children"))
+            (local mut $pi i32 0)
+            (loop $ppargs
+              (if (ge.i32 $pi %pc) (then (br $ppargs))
+                (else (print " ") (call $print_ast (load.i32 (add.i32 %parr $pi)))
+                  (set $pi (add.i32 $pi 1))))))
+          (else))
+        (print ")") (return))
+      (else))
+    (if (eq.i32 %tag 27)
+      (then
+        (print "(param %s " (load.field %n "str1"))
+        (call $print_type (load.field %n "type1"))
+        (print ")") (return))
+      (else))
+    (if (eq.i32 %tag 28)
+      (then
+        (print "(func %s" (load.field %n "str1"))
+        (let %pc i32 (cast i64 i32 (load.field %n "int1")))
+        (let %tc i32 (load.field %n "count"))
+        (let %arr (ptr i32) (load.field %n "children"))
+        (local mut $pi i32 0)
+        (loop $pparams
+          (if (ge.i32 $pi %pc) (then (br $pparams))
+            (else (print " ") (call $print_ast (load.i32 (add.i32 %arr $pi)))
+              (set $pi (add.i32 $pi 1)))))
+        (if (ne.i32 (load.field %n "type1") -1)
+          (then (print " (result ") (call $print_type (load.field %n "type1")) (print ")"))
+          (else))
+        (let %eff i32 (load.field %n "bool1"))
+        (if (gt.i32 %eff 0)
+          (then
+            (print " (effects")
+            (if (and.i32 %eff 1) (then (print " pure")) (else))
+            (if (and.i32 %eff 2) (then (print " mem")) (else))
+            (if (and.i32 %eff 4) (then (print " io")) (else))
+            (if (and.i32 %eff 8) (then (print " div")) (else))
+            (print ")"))
+          (else))
+        (if (load.field %n "str2")
+          (then (print " (intent \"%s\")" (load.field %n "str2")))
+          (else))
+        (local mut $bi i32 %pc)
+        (loop $pbody
+          (if (ge.i32 $bi %tc) (then (br $pbody))
+            (else (print " ") (call $print_ast (load.i32 (add.i32 %arr $bi)))
+              (set $bi (add.i32 $bi 1)))))
+        (print ")") (return))
+      (else))
+    (if (eq.i32 %tag 29)
+      (then
+        (print "(global")
+        (if (load.field %n "bool1") (then (print " mut")) (else))
+        (print " %s " (load.field %n "str1"))
+        (call $print_type (load.field %n "type1"))
+        (if (ne.i32 (load.field %n "left") -1)
+          (then (print " ") (call $print_ast (load.field %n "left")))
+          (else))
+        (print ")") (return))
+      (else))
+    (if (eq.i32 %tag 30)
+      (then
+        (print "(type %s " (load.field %n "str1"))
+        (call $print_type (load.field %n "type1"))
+        (print ")") (return))
+      (else))
+    (if (eq.i32 %tag 31)
+      (then (print "(export %s)" (load.field %n "str1")) (return))
+      (else))
+    (if (eq.i32 %tag 32)
+      (then
+        (print "(extern \"%s\" %s" (load.field %n "str2") (load.field %n "str1"))
+        (let %xc i32 (load.field %n "count"))
+        (if (gt.i32 %xc 0)
+          (then
+            (let %xarr (ptr i32) (load.field %n "children"))
+            (local mut $xi i32 0)
+            (loop $pxp
+              (if (ge.i32 $xi %xc) (then (br $pxp))
+                (else (print " ") (call $print_ast (load.i32 (add.i32 %xarr $xi)))
+                  (set $xi (add.i32 $xi 1))))))
+          (else))
+        (if (ne.i32 (load.field %n "type1") -1)
+          (then (print " (result ") (call $print_type (load.field %n "type1")) (print ")"))
+          (else))
+        (print ")") (return))
+      (else))
+    (if (eq.i32 %tag 33)
+      (then
+        (print "(module \"%s\"\n" (load.field %n "str1"))
+        (let %mc i32 (load.field %n "count"))
+        (let %marr (ptr i32) (load.field %n "children"))
+        (local mut $mi i32 0)
+        (loop $pmod
+          (if (ge.i32 $mi %mc) (then (br $pmod))
+            (else (print "  ") (call $print_ast (load.i32 (add.i32 %marr $mi)))
+              (print "\n") (set $mi (add.i32 $mi 1)))))
+        (let %mc2 i32 (load.field %n "count2"))
+        (if (gt.i32 %mc2 0)
+          (then
+            (let %marr2 (ptr i32) (load.field %n "children2"))
+            (local mut $mi2 i32 0)
+            (loop $pmod2
+              (if (ge.i32 $mi2 %mc2) (then (br $pmod2))
+                (else (print "  ") (call $print_ast (load.i32 (add.i32 %marr2 $mi2)))
+                  (print "\n") (set $mi2 (add.i32 $mi2 1))))))
+          (else))
+        (print ")") (return))
+      (else))
+    (print "<ast:%d>" %tag))
+
+  ;; ── Test entry point ───────────────────────────────────────
+
+  (func $main
+    (result i32)
+    (effects io mem div)
+    (intent "Run parser tests: parse sample ARIA source and print resulting AST")
+    (call $init_pool)
+    (call $init_parser)
+
+    (print "=== Test 1: Simple function ===\n")
+    (let %src1 (ptr u8) "(module \"test\" (func $main (param $n i32) (result i32) (effects pure) (return (add.i32 $n 1))))")
+    (print "Input: %s\n\n" %src1)
+    (let %tree1 i32 (call $read_all %src1))
+    (let %mod1 i32 (call $parse_module (call $sexp_child %tree1 0)))
+    (print "AST:\n")
+    (call $print_ast %mod1)
+    (print "\n\n")
+
+    (print "=== Test 2: Fibonacci ===\n")
+    (let %src2 (ptr u8) "(module \"fibonacci\" (func $fibonacci (param $n i32) (result i32) (effects pure) (if (le.i32 $n 1) (then (return $n)) (else (let %a i32 (call $fibonacci (sub.i32 $n 1))) (let %b i32 (call $fibonacci (sub.i32 $n 2))) (return (add.i32 %a %b))))) (export $fibonacci))")
+    (let %tree2 i32 (call $read_all %src2))
+    (let %mod2 i32 (call $parse_module (call $sexp_child %tree2 0)))
+    (print "AST:\n")
+    (call $print_ast %mod2)
+    (print "\n\n")
+
+    (print "=== Test 3: Globals + types + extern ===\n")
+    (let %src3 (ptr u8) "(module \"test3\" (extern \"sys\" $trap (param $msg (ptr u8))) (type $MyInt i32) (global mut $counter i32 0) (func $inc (effects mem) (set $counter (add.i32 $counter 1))) (export $inc))")
+    (let %tree3 i32 (call $read_all %src3))
+    (let %mod3 i32 (call $parse_module (call $sexp_child %tree3 0)))
+    (print "AST:\n")
+    (call $print_ast %mod3)
+    (print "\n\n")
+
+    (print "All parser tests passed.\n")
+    (return 0))
+
+  ;; ── Exports ────────────────────────────────────────────────
+
+  (export $main)
+  (export $init_pool)
+  (export $read_all)
+  (export $node_at)
+  (export $init_parser)
+  (export $parse_module)
+  (export $parse_expr)
+  (export $print_ast)
+  (export $ast_at)
+  (export $type_at))
