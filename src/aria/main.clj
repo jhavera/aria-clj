@@ -359,6 +359,10 @@
       (= backend "jvm")
       (codegen-jvm/emit-class-file! module ".")
 
+      ;; JVM JAR backend
+      (= backend "jvm-jar")
+      (codegen-jvm/emit-jar! module ".")
+
       ;; C backend (default)
       :else
       (let [c-source (codegen-c/generate module)]
@@ -397,6 +401,7 @@
           (= arg "--emit-c")     (recur (rest args) (assoc opts :emit-c true))
           (= arg "--emit-wat")   (recur (rest args) (assoc opts :emit-wat true))
           (= arg "--emit-class") (recur (rest args) (assoc opts :backend "jvm"))
+          (= arg "--emit-jar")   (recur (rest args) (assoc opts :backend "jvm-jar"))
           (= arg "--emit-ast")   (recur (rest args) (assoc opts :emit-ast true))
           (= arg "--check")    (recur (rest args) (assoc opts :check-only true))
           (= arg "--run")      (recur (rest args) (assoc opts :run true))
