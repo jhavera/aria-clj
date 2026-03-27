@@ -26,7 +26,7 @@ jobs:
         run: clojure -M:test
 
       - name: Build uberjar
-        run: clj -T:build uber
+        run: clojure -T:build uber
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
