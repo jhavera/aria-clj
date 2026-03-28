@@ -1,0 +1,35 @@
+(module "math"
+
+  (func $gcd
+    (param $a i32)
+    (param $b i32)
+    (result i32)
+    (effects pure)
+    (intent "Compute GCD using Euclidean algorithm")
+    (if (eq.i32 $b 0)
+      (then (return $a))
+      (else (return (call $gcd $b (rem.i32 $a $b))))))
+
+  (func $factorial
+    (param $n i32)
+    (result i64)
+    (effects pure)
+    (intent "Compute n! iteratively")
+    (local mut $result i64 1)
+    (local mut $i i32 1)
+    (loop $fl
+      (if (gt.i32 $i $n)
+        (then (br $fl))
+        (else
+          (set $result (mul.i64 $result (cast i32 i64 $i)))
+          (set $i (add.i32 $i 1)))))
+    (return $result))
+
+  (func $helper
+    (result i32)
+    (effects pure)
+    (intent "Internal helper, not exported")
+    (return 42))
+
+  (export $gcd)
+  (export $factorial))
