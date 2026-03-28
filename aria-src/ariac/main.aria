@@ -1,0 +1,456 @@
+; ═══════════════════════════════════════════════════════════
+; main — CLI entry point, debug printers
+; Top-level module: imports everything, provides $main.
+; ═══════════════════════════════════════════════════════════
+
+(module "main"
+
+  (import "types.aria")
+  (import "reader.aria")
+  (import "parser.aria")
+  (import "checker.aria")
+  (import "codegen.aria")
+
+  ;; ── Type printer ───────────────────────────────────────────
+
+  (func $print_type
+    (param $tidx i32)
+    (effects io mem div)
+    (intent "Print a TypeInfo node in human-readable s-expression format")
+    (if (eq.i32 $tidx -1) (then (print "void") (return)) (else))
+    (let %t (ptr $types.TypeInfo) (call $types.type_at $tidx))
+    (let %kind i32 (load.field %t "kind"))
+    (if (eq.i32 %kind 0)
+      (then (print "%s" (load.field %t "name")) (return))
+      (else))
+    (if (eq.i32 %kind 1)
+      (then (print "(ptr ") (call $print_type (load.field %t "inner")) (print ")") (return))
+      (else))
+    (if (eq.i32 %kind 2)
+      (then (print "(array ") (call $print_type (load.field %t "inner")) (print " %d)" (load.field %t "size")) (return))
+      (else))
+    (if (eq.i32 %kind 3)
+      (then (print "(slice ") (call $print_type (load.field %t "inner")) (print ")") (return))
+      (else))
+    (if (eq.i32 %kind 4)
+      (then
+        (print "(struct")
+        (let %fc i32 (load.field %t "field_count"))
+        (let %fs i32 (load.field %t "field_start"))
+        (local mut $fi i32 0)
+        (loop $pf
+          (if (ge.i32 $fi %fc)
+            (then (br $pf))
+            (else
+              (let %fld (ptr $types.FieldInfo) (call $types.field_at (add.i32 %fs $fi)))
+              (print " (field %s " (load.field %fld "name"))
+              (call $print_type (load.field %fld "type_idx"))
+              (print ")")
+              (set $fi (add.i32 $fi 1)))))
+        (print ")") (return))
+      (else))
+    (print "<type?>"))
+
+  ;; ── AST printer ────────────────────────────────────────────
+
+  (func $print_ast
+    (param $aidx i32)
+    (effects io mem div)
+    (intent "Print an AST node tree in human-readable s-expression format")
+    (if (eq.i32 $aidx -1) (then (return)) (else))
+    (let %n (ptr $types.ASTNode) (call $types.ast_at $aidx))
+    (let %tag i32 (load.field %n "tag"))
+    (if (eq.i32 %tag 0)
+      (then (print "%ld" (load.field %n "int1")) (return))
+      (else))
+    (if (eq.i32 %tag 1)
+      (then (print "%g" (load.field %n "float1")) (return))
+      (else))
+    (if (eq.i32 %tag 2)
+      (then
+        (if (load.field %n "bool1") (then (print "true")) (else (print "false")))
+        (return))
+      (else))
+    (if (eq.i32 %tag 3)
+      (then (print "\"%s\"" (load.field %n "str1")) (return))
+      (else))
+    (if (eq.i32 %tag 4)
+      (then (print "%s" (load.field %n "str1")) (return))
+      (else))
+    (if (eq.i32 %tag 5)
+      (then
+        (print "(%s" (load.field %n "str1"))
+        (if (load.field %n "str2") (then (print ".%s" (load.field %n "str2"))) (else))
+        (print " ") (call $print_ast (load.field %n "left"))
+        (print " ") (call $print_ast (load.field %n "right"))
+        (print ")") (return))
+      (else))
+    (if (eq.i32 %tag 6)
+      (then
+        (print "(%s" (load.field %n "str1"))
+        (if (load.field %n "str2") (then (print ".%s" (load.field %n "str2"))) (else))
+        (print " ") (call $print_ast (load.field %n "left"))
+        (print ")") (return))
+      (else))
+    (if (eq.i32 %tag 7)
+      (then
+        (print "(%s" (load.field %n "str1"))
+        (if (load.field %n "str2") (then (print ".%s" (load.field %n "str2"))) (else))
+        (print " ") (call $print_ast (load.field %n "left"))
+        (print " ") (call $print_ast (load.field %n "right"))
+        (print ")") (return))
+      (else))
+    (if (eq.i32 %tag 8)
+      (then
+        (if (load.field %n "bool1") (then (print "(local mut ")) (else (print "(let ")))
+        (print "%s " (load.field %n "str1"))
+        (call $print_type (load.field %n "type1"))
+        (if (ne.i32 (load.field %n "left") -1)
+          (then (print " ") (call $print_ast (load.field %n "left")))
+          (else))
+        (print ")") (return))
+      (else))
+    (if (eq.i32 %tag 9)
+      (then
+        (print "(set %s " (load.field %n "str1"))
+        (call $print_ast (load.field %n "left"))
+        (print ")") (return))
+      (else))
+    (if (eq.i32 %tag 10)
+      (then
+        (print "(call %s" (load.field %n "str1"))
+        (let %ac i32 (load.field %n "count"))
+        (if (gt.i32 %ac 0)
+          (then
+            (let %arr (ptr i32) (load.field %n "children"))
+            (local mut $ai i32 0)
+            (loop $pargs
+              (if (ge.i32 $ai %ac) (then (br $pargs))
+                (else (print " ") (call $print_ast (load.i32 (add.i32 %arr $ai)))
+                  (set $ai (add.i32 $ai 1))))))
+          (else))
+        (print ")") (return))
+      (else))
+    (if (eq.i32 %tag 11)
+      (then
+        (print "(return")
+        (if (ne.i32 (load.field %n "left") -1)
+          (then (print " ") (call $print_ast (load.field %n "left")))
+          (else))
+        (print ")") (return))
+      (else))
+    (if (eq.i32 %tag 12)
+      (then
+        (print "(if ") (call $print_ast (load.field %n "left")) (print " (then")
+        (let %tc i32 (load.field %n "count"))
+        (let %tarr (ptr i32) (load.field %n "children"))
+        (local mut $ti i32 0)
+        (loop $pthen
+          (if (ge.i32 $ti %tc) (then (br $pthen))
+            (else (print " ") (call $print_ast (load.i32 (add.i32 %tarr $ti)))
+              (set $ti (add.i32 $ti 1)))))
+        (print ")")
+        (let %ec i32 (load.field %n "count2"))
+        (if (gt.i32 %ec 0)
+          (then
+            (print " (else")
+            (let %earr (ptr i32) (load.field %n "children2"))
+            (local mut $ei i32 0)
+            (loop $pelse
+              (if (ge.i32 $ei %ec) (then (br $pelse))
+                (else (print " ") (call $print_ast (load.i32 (add.i32 %earr $ei)))
+                  (set $ei (add.i32 $ei 1)))))
+            (print ")"))
+          (else))
+        (print ")") (return))
+      (else))
+    (if (eq.i32 %tag 13)
+      (then
+        (print "(loop %s" (load.field %n "str1"))
+        (let %bc i32 (load.field %n "count"))
+        (let %barr (ptr i32) (load.field %n "children"))
+        (local mut $bi i32 0)
+        (loop $pbody
+          (if (ge.i32 $bi %bc) (then (br $pbody))
+            (else (print " ") (call $print_ast (load.i32 (add.i32 %barr $bi)))
+              (set $bi (add.i32 $bi 1)))))
+        (print ")") (return))
+      (else))
+    (if (eq.i32 %tag 15)
+      (then (print "(br %s)" (load.field %n "str1")) (return))
+      (else))
+    (if (eq.i32 %tag 16)
+      (then
+        (print "(br_if ") (call $print_ast (load.field %n "left"))
+        (print " %s)" (load.field %n "str1")) (return))
+      (else))
+    (if (eq.i32 %tag 24)
+      (then
+        (print "(print \"%s\"" (load.field %n "str1"))
+        (let %pc i32 (load.field %n "count"))
+        (if (gt.i32 %pc 0)
+          (then
+            (let %parr (ptr i32) (load.field %n "children"))
+            (local mut $pi i32 0)
+            (loop $ppargs
+              (if (ge.i32 $pi %pc) (then (br $ppargs))
+                (else (print " ") (call $print_ast (load.i32 (add.i32 %parr $pi)))
+                  (set $pi (add.i32 $pi 1))))))
+          (else))
+        (print ")") (return))
+      (else))
+    (if (eq.i32 %tag 27)
+      (then
+        (print "(param %s " (load.field %n "str1"))
+        (call $print_type (load.field %n "type1"))
+        (print ")") (return))
+      (else))
+    (if (eq.i32 %tag 28)
+      (then
+        (print "(func %s" (load.field %n "str1"))
+        (let %pc i32 (cast i64 i32 (load.field %n "int1")))
+        (let %tc i32 (load.field %n "count"))
+        (let %arr (ptr i32) (load.field %n "children"))
+        (local mut $pi i32 0)
+        (loop $pparams
+          (if (ge.i32 $pi %pc) (then (br $pparams))
+            (else (print " ") (call $print_ast (load.i32 (add.i32 %arr $pi)))
+              (set $pi (add.i32 $pi 1)))))
+        (if (ne.i32 (load.field %n "type1") -1)
+          (then (print " (result ") (call $print_type (load.field %n "type1")) (print ")"))
+          (else))
+        (let %eff i32 (load.field %n "bool1"))
+        (if (gt.i32 %eff 0)
+          (then
+            (print " (effects")
+            (if (and.i32 %eff 1) (then (print " pure")) (else))
+            (if (and.i32 %eff 2) (then (print " mem")) (else))
+            (if (and.i32 %eff 4) (then (print " io")) (else))
+            (if (and.i32 %eff 8) (then (print " div")) (else))
+            (print ")"))
+          (else))
+        (if (load.field %n "str2")
+          (then (print " (intent \"%s\")" (load.field %n "str2")))
+          (else))
+        (local mut $bi i32 %pc)
+        (loop $pbody
+          (if (ge.i32 $bi %tc) (then (br $pbody))
+            (else (print " ") (call $print_ast (load.i32 (add.i32 %arr $bi)))
+              (set $bi (add.i32 $bi 1)))))
+        (print ")") (return))
+      (else))
+    (if (eq.i32 %tag 29)
+      (then
+        (print "(global")
+        (if (load.field %n "bool1") (then (print " mut")) (else))
+        (print " %s " (load.field %n "str1"))
+        (call $print_type (load.field %n "type1"))
+        (if (ne.i32 (load.field %n "left") -1)
+          (then (print " ") (call $print_ast (load.field %n "left")))
+          (else))
+        (print ")") (return))
+      (else))
+    (if (eq.i32 %tag 30)
+      (then
+        (print "(type %s " (load.field %n "str1"))
+        (call $print_type (load.field %n "type1"))
+        (print ")") (return))
+      (else))
+    (if (eq.i32 %tag 31)
+      (then (print "(export %s)" (load.field %n "str1")) (return))
+      (else))
+    (if (eq.i32 %tag 32)
+      (then
+        (print "(extern \"%s\" %s" (load.field %n "str2") (load.field %n "str1"))
+        (let %xc i32 (load.field %n "count"))
+        (if (gt.i32 %xc 0)
+          (then
+            (let %xarr (ptr i32) (load.field %n "children"))
+            (local mut $xi i32 0)
+            (loop $pxp
+              (if (ge.i32 $xi %xc) (then (br $pxp))
+                (else (print " ") (call $print_ast (load.i32 (add.i32 %xarr $xi)))
+                  (set $xi (add.i32 $xi 1))))))
+          (else))
+        (if (ne.i32 (load.field %n "type1") -1)
+          (then (print " (result ") (call $print_type (load.field %n "type1")) (print ")"))
+          (else))
+        (print ")") (return))
+      (else))
+    (if (eq.i32 %tag 33)
+      (then
+        (print "(module \"%s\"\n" (load.field %n "str1"))
+        (let %mc i32 (load.field %n "count"))
+        (let %marr (ptr i32) (load.field %n "children"))
+        (local mut $mi i32 0)
+        (loop $pmod
+          (if (ge.i32 $mi %mc) (then (br $pmod))
+            (else (print "  ") (call $print_ast (load.i32 (add.i32 %marr $mi)))
+              (print "\n") (set $mi (add.i32 $mi 1)))))
+        (let %mc2 i32 (load.field %n "count2"))
+        (if (gt.i32 %mc2 0)
+          (then
+            (let %marr2 (ptr i32) (load.field %n "children2"))
+            (local mut $mi2 i32 0)
+            (loop $pmod2
+              (if (ge.i32 $mi2 %mc2) (then (br $pmod2))
+                (else (print "  ") (call $print_ast (load.i32 (add.i32 %marr2 $mi2)))
+                  (print "\n") (set $mi2 (add.i32 $mi2 1))))))
+          (else))
+        (print ")") (return))
+      (else))
+    (print "<ast:%d>" %tag))
+
+  ;; ── CLI helper ─────────────────────────────────────────────
+
+  (func $cg_write_cmd
+    (param $prefix (ptr u8))
+    (param $name (ptr u8))
+    (param $suffix (ptr u8))
+    (param $raw i32)
+    (effects io mem div)
+    (intent "Write a shell command to /tmp/ariac_cmd.sh: prefix + name + suffix")
+    (call $types.stdout_to_file "/tmp/ariac_cmd.sh")
+    (print "%s" $prefix)
+    (if $raw
+      (then (print "%s" $name))
+      (else (call $codegen.cg_emit_name $name)))
+    (print "%s" $suffix)
+    (call $types.stdout_restore))
+
+  ;; ── CLI entry point ────────────────────────────────────────
+
+  (func $main
+    (result i32)
+    (effects io mem div)
+    (intent "ARIA compiler CLI: compile ARIA-IR to native binary via C")
+
+    (let %argc i32 (call $types.args_count))
+
+    ;; --help or no args
+    (if (lt.i32 %argc 2)
+      (then
+        (print "ariac — ARIA Compiler (self-hosted)\n\n")
+        (print "Usage: ariac <file.aria> [options]\n\n")
+        (print "Options:\n")
+        (print "  --run        Compile and execute\n")
+        (print "  --emit-c     Emit C to stdout\n")
+        (print "  --check      Type-check only\n")
+        (print "  --emit-ast   Print AST\n")
+        (print "  -o <name>    Output binary name\n")
+        (print "  --help       Show this help\n")
+        (return 0))
+      (else))
+    (if (call $types.str_eq (call $types.args_get 1) "--help")
+      (then
+        (print "ariac — ARIA Compiler (self-hosted)\n\n")
+        (print "Usage: ariac <file.aria> [options]\n\n")
+        (print "Options:\n")
+        (print "  --run        Compile and execute\n")
+        (print "  --emit-c     Emit C to stdout\n")
+        (print "  --check      Type-check only\n")
+        (print "  --emit-ast   Print AST\n")
+        (print "  -o <name>    Output binary name\n")
+        (print "  --help       Show this help\n")
+        (return 0))
+      (else))
+
+    (let %path (ptr u8) (call $types.args_get 1))
+
+    ;; Parse flags
+    (local mut $check_only i32 0)
+    (local mut $emit_ast i32 0)
+    (local mut $emit_c i32 0)
+    (local mut $run_flag i32 0)
+    (local mut $out_name (ptr u8) 0)
+    (local mut $fi i32 2)
+    (loop $flags
+      (if (ge.i32 $fi %argc)
+        (then (br $flags))
+        (else
+          (let %flag (ptr u8) (call $types.args_get $fi))
+          (if (call $types.str_eq %flag "--check")    (then (set $check_only 1)) (else))
+          (if (call $types.str_eq %flag "--emit-ast") (then (set $emit_ast 1))   (else))
+          (if (call $types.str_eq %flag "--emit-c")   (then (set $emit_c 1))     (else))
+          (if (call $types.str_eq %flag "--run")      (then (set $run_flag 1))   (else))
+          (if (call $types.str_eq %flag "-o")
+            (then
+              (set $fi (add.i32 $fi 1))
+              (if (lt.i32 $fi %argc)
+                (then (set $out_name (call $types.args_get $fi)))
+                (else (print "ariac: -o requires an argument\n") (return 1))))
+            (else))
+          (set $fi (add.i32 $fi 1)))))
+
+    ;; Init pools
+    (call $types.init_pool)
+    (call $types.init_parser)
+
+    ;; Read source
+    (let %src (ptr u8) (call $types.file_read_all %path))
+    (if (eq.i32 %src 0)
+      (then (print "ariac: cannot read file: %s\n" %path) (return 1))
+      (else))
+
+    ;; Read s-expressions
+    (let %sexp_root i32 (call $reader.read_all %src))
+
+    ;; Parse module
+    (let %mod_ast i32 (call $parser.parse_module %sexp_root))
+    (let %mod_node (ptr $types.ASTNode) (call $types.ast_at %mod_ast))
+    (let %mod_name (ptr u8) (load.field %mod_node "str1"))
+
+    ;; Check
+    (call $checker.init_checker)
+    (let %check_result i32 (call $checker.check_module %mod_ast))
+    (if (ne.i32 %check_result 0)
+      (then (return 1))
+      (else))
+
+    ;; --check
+    (if $check_only (then (return 0)) (else))
+
+    ;; --emit-ast
+    (if $emit_ast
+      (then (call $print_ast %mod_ast) (print "\n") (return 0))
+      (else))
+
+    ;; Codegen
+    (call $codegen.init_codegen)
+
+    (call $types.stdout_to_file "/tmp/ariac_out.c")
+    (call $codegen.cg_emit_module %mod_ast)
+    (call $types.stdout_restore)
+
+    ;; --emit-c: dump C to stdout and exit
+    (if $emit_c
+      (then (call $types.system "cat /tmp/ariac_out.c") (return 0))
+      (else))
+
+    ;; Compile with gcc
+    (local mut $bin_name (ptr u8) %mod_name)
+    (local mut $bin_raw i32 0)
+    (if (ne.i32 $out_name 0)
+      (then (set $bin_name $out_name) (set $bin_raw 1))
+      (else))
+    (call $cg_write_cmd "gcc -std=c99 -fwrapv -o " $bin_name " /tmp/ariac_out.c -lm\n" $bin_raw)
+    (let %gcc_ret i32 (call $types.system "sh /tmp/ariac_cmd.sh"))
+    (if (ne.i32 %gcc_ret 0)
+      (then (print "ariac: gcc failed\n") (return 1))
+      (else))
+
+    ;; --run: also execute the binary
+    (if $run_flag
+      (then
+        (call $cg_write_cmd "./" $bin_name "\n" $bin_raw)
+        (let %run_ret i32 (call $types.system "sh /tmp/ariac_cmd.sh"))
+        (return %run_ret))
+      (else))
+
+    (return 0))
+
+  ;; ── Exports ────────────────────────────────────────────────
+
+  (export $main)
+
+) ;; end module "main"
