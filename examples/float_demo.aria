@@ -1,0 +1,55 @@
+; ═══════════════════════════════════════════════════════════
+; ARIA Example: Float Demo
+; Demonstrates: f64 literals, float arithmetic, casting
+; ═══════════════════════════════════════════════════════════
+
+(module "float_demo"
+
+  (func $circle_area
+    (param $radius f64)
+    (result f64)
+    (effects pure)
+    (intent "Compute circle area: pi * r * r")
+
+    (let %pi f64 3.14159265358979)
+    (return (mul.f64 %pi (mul.f64 $radius $radius))))
+
+  (func $fahrenheit_to_celsius
+    (param $f f64)
+    (result f64)
+    (effects pure)
+    (intent "Convert Fahrenheit to Celsius: (f - 32) * 5/9")
+
+    (return (div.f64 (mul.f64 (sub.f64 $f 32.0) 5.0) 9.0)))
+
+  (func $main
+    (result i32)
+    (effects io div)
+    (intent "Demonstrate float operations")
+
+    (print "=== Float Demo ===\n\n")
+
+    ; Circle areas
+    (print "Circle areas:\n")
+    (let %a1 f64 (call $circle_area 1.0))
+    (let %a2 f64 (call $circle_area 2.5))
+    (let %a3 f64 (call $circle_area 10.0))
+    (print "  r=1.0  -> area=%.6f\n" %a1)
+    (print "  r=2.5  -> area=%.6f\n" %a2)
+    (print "  r=10.0 -> area=%.6f\n" %a3)
+
+    ; Temperature conversion
+    (print "\nTemperature conversion:\n")
+    (print "  32F  = %.1fC\n" (call $fahrenheit_to_celsius 32.0))
+    (print "  212F = %.1fC\n" (call $fahrenheit_to_celsius 212.0))
+    (print "  98.6F = %.1fC\n" (call $fahrenheit_to_celsius 98.6))
+
+    ; Int to float cast
+    (print "\nInt-to-float cast:\n")
+    (let %n i32 7)
+    (let %half f64 (div.f64 (cast i32 f64 %n) 2.0))
+    (print "  7 / 2.0 = %.1f\n" %half)
+
+    (return 0))
+
+  (export $main))
