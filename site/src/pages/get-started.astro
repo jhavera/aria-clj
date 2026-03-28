@@ -45,7 +45,7 @@ import Base from '../layouts/Base.astro';
           <button data-tab="source" class="tab-btn px-4 py-2 text-sm font-medium border-b-2 border-transparent text-muted hover:text-text transition-colors" >Source</button>
           <button data-tab="uberjar" class="tab-btn px-4 py-2 text-sm font-medium border-b-2 border-accent text-accent">Uberjar</button>
           <button data-tab="wasm" class="tab-btn px-4 py-2 text-sm font-medium border-b-2 border-transparent text-muted hover:text-text transition-colors">WASM</button>
-          <button data-tab="native" class="tab-btn px-4 py-2 text-sm font-medium border-b-2 border-transparent text-muted/50 cursor-not-allowed">Native Binary <span class="text-xs ml-1 opacity-60">v0.2</span></button>
+          <button data-tab="native" class="tab-btn px-4 py-2 text-sm font-medium border-b-2 border-transparent text-muted/50 cursor-not-allowed">Native Binary <span class="text-xs ml-1 opacity-60">coming soon</span></button>
         </div>
 
         <!-- Source tab -->
@@ -98,7 +98,7 @@ clj -M:run examples/fibonacci.aria --backend wasm --optimize -o fib.wasm</code><
         <!-- Native tab (disabled) -->
         <div id="tab-native" class="tab-panel hidden pt-6">
           <div class="bg-surface border border-border rounded-lg p-8 text-center">
-            <p class="text-muted">GraalVM native binaries are planned for v0.2.</p>
+            <p class="text-muted">GraalVM native binaries are planned for a future release.</p>
             <p class="text-muted text-sm mt-2">This will provide sub-100ms startup with zero dependencies.</p>
           </div>
         </div>

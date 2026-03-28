@@ -83,6 +83,18 @@ import Pipeline from '../components/Pipeline.astro';
           <div class="text-muted ml-8">&darr;</div>
           <div class="ml-4"><span class="text-text">Intent Verification</span> <span class="text-muted">(Layer 4)</span></div>
         </div>
+        <div class="mt-6 space-y-4 text-text/90 leading-relaxed">
+          <p>
+            Layer 4 is not planned — it is built. The <code>--verify</code> flag compiles each function with concrete test inputs, runs the binary, captures the output, and asks the Claude API whether the observed behavior matches the declared intent.
+          </p>
+          <p>
+            This is dynamic verification, not static analysis. The verifier does not read the code. It runs it.
+          </p>
+          <pre><code>clojure -M:run examples/fibonacci.aria --verify</code></pre>
+          <p>
+            Each function with an <code>(intent "...")</code> annotation receives a VERIFIED or NOT_VERIFIED verdict. If any function fails, the process exits with code 1. The flag is orthogonal to backend selection — verify and compile in a single pass.
+          </p>
+        </div>
       </section>
 
       <!-- Comptime: The Pipeline Doing Its Job -->
