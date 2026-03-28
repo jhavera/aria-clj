@@ -199,15 +199,21 @@
                     "Function: " func-name "\n"
                     "Declared intent: \"" intent "\"\n\n"
                     "Implementation:\n" aria-str "\n\n"
-                    "ARIA-IR semantics note:\n"
-                    "- (br $label) exits the named loop — it is a break, not a continue\n"
-                    "- (loop $label body...) repeats body until a (br $label) is reached\n"
-                    "- The exit condition is placed in a (then (br $label)) branch\n"
-                    "- The loop body runs in the (else ...) branch\n\n"
-                    "Does this implementation correctly fulfill the declared intent?\n"
+                    "ARIA-IR semantics:\n"
+                    "- (br $label) exits the named loop — break, not continue\n"
+                    "- (loop $label body...) repeats until (br $label) is reached\n"
+                    "- The pattern (loop $L (if EXIT (then (br $L)) (else BODY)))\n"
+                    "  means: run BODY while EXIT is false, stop when EXIT is true\n\n"
+                    "To verify this function:\n"
+                    "1. Choose one or two simple concrete inputs appropriate for\n"
+                    "   the declared intent\n"
+                    "2. Trace through the implementation step by step with those inputs\n"
+                    "3. State the result of your trace\n"
+                    "4. Compare the traced result to what the intent says should happen\n\n"
                     "Respond with exactly two lines:\n"
                     "Line 1: VERIFIED or NOT_VERIFIED\n"
-                    "Line 2: One sentence explaining why.")]
+                    "Line 2: One sentence summarizing your trace result and whether\n"
+                    "        it matches the intent.")]
     (try
       (let [response (call-api api-key prompt model)
             lines (->> (str/split-lines response)
