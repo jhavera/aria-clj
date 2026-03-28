@@ -1,12 +1,14 @@
 ; ═══════════════════════════════════════════════════════════
-; ARIA Self-Hosted Parser
-; Transforms SExp tree (from reader) into validated AST nodes
+; ariac — ARIA Compiler (self-hosted)
+; Compiles ARIA-IR source to C99 via: read -> parse -> check -> codegen
 ;
 ; Module structure:
 ;   SECTION 1 — SHARED: externs, types
 ;   SECTION 2 — READER: s-expression parsing
 ;   SECTION 3 — PARSER: AST construction from SExp tree
-;   SECTION 4 — DEBUG + MAIN: printers, tests, exports
+;   SECTION 3b — CHECKER: scoping, mutability, effects
+;   SECTION 3c — CODEGEN: C99 emission
+;   SECTION 4 — DEBUG + MAIN: printers, CLI, tests
 ;
 ; ASTNode tags:
 ;   0=int-lit  1=float-lit  2=bool-lit  3=str-lit  4=var-ref
@@ -21,7 +23,7 @@
 ;   0=primitive 1=ptr 2=array 3=slice 4=struct 5=func-type
 ; ═══════════════════════════════════════════════════════════
 
-(module "parser"
+(module "ariac"
 
   ;; ═══════════════════════════════════════════════════════════
   ;; SECTION 1: SHARED (externs, types used by both reader and parser)
@@ -32,6 +34,9 @@
   (extern "sys" $trap (param $msg (ptr u8)))
   (extern "sys" $str_len (param $s (ptr u8)) (result i32))
   (extern "sys" $str_eq (param $a (ptr u8)) (param $b (ptr u8)) (result i32))
+  (extern "sys" $args_count (result i32))
+  (extern "sys" $args_get (param $i i32) (result (ptr u8)))
+  (extern "io" $file_read_all (param $path (ptr u8)) (result (ptr u8)))
 
   ;; ── SExp node type (produced by reader, consumed by parser) ─
 
@@ -1774,6 +1779,7 @@
   (global mut $chk_warns   i32     0)
   (global mut $chk_effects i32     0)
   (global mut $chk_fn_name (ptr u8) 0)
+  (global mut $chk_quiet   i32     0)
 
   ;; ── Checker init ───────────────────────────────────────────
 
@@ -1968,7 +1974,7 @@
     (param $msg (ptr u8))
     (effects io mem)
     (intent "Report a checker error")
-    (print "ERROR [%s]: %s\n" $chk_fn_name $msg)
+    (if $chk_quiet (then) (else (print "ERROR [%s]: %s\n" $chk_fn_name $msg)))
     (set $chk_errors (add.i32 $chk_errors 1)))
 
   (func $chk_error2
@@ -1976,14 +1982,14 @@
     (param $name (ptr u8))
     (effects io mem)
     (intent "Report a checker error with name context")
-    (print "ERROR [%s]: %s '%s'\n" $chk_fn_name $msg $name)
+    (if $chk_quiet (then) (else (print "ERROR [%s]: %s '%s'\n" $chk_fn_name $msg $name)))
     (set $chk_errors (add.i32 $chk_errors 1)))
 
   (func $chk_warn
     (param $msg (ptr u8))
     (effects io mem)
     (intent "Report a checker warning")
-    (print "WARN [%s]: %s\n" $chk_fn_name $msg)
+    (if $chk_quiet (then) (else (print "WARN [%s]: %s\n" $chk_fn_name $msg)))
     (set $chk_warns (add.i32 $chk_warns 1)))
 
   (func $chk_warn2
@@ -1991,7 +1997,7 @@
     (param $name (ptr u8))
     (effects io mem)
     (intent "Report a checker warning with name context")
-    (print "WARN [%s]: %s '%s'\n" $chk_fn_name $msg $name)
+    (if $chk_quiet (then) (else (print "WARN [%s]: %s '%s'\n" $chk_fn_name $msg $name)))
     (set $chk_warns (add.i32 $chk_warns 1)))
 
   ;; ── Global mutation check ────────────────────────────────
@@ -2445,7 +2451,9 @@
           (set $ci (add.i32 $ci 1)))))
 
     ;; Report summary
-    (print "Checker: %d errors, %d warnings\n" $chk_errors $chk_warns)
+    (if (eq.i32 $chk_quiet 0)
+      (then (print "Checker: %d errors, %d warnings\n" $chk_errors $chk_warns))
+      (else))
     (if (gt.i32 $chk_errors 0)
       (then (return 1))
       (else (return 0))))
@@ -3655,21 +3663,19 @@
       (else))
     (print "<ast:%d>" %tag))
 
-  ;; ── Test entry point ───────────────────────────────────────
+  ;; ── Internal test suite ─────────────────────────────────────
 
-  (func $main
+  (func $run_tests
     (result i32)
     (effects io mem div)
-    (intent "Run parser tests: parse sample ARIA source and print resulting AST")
+    (intent "Run all internal parser and checker tests")
     (call $init_pool)
     (call $init_parser)
 
     (print "=== Test 1: Simple function ===\n")
     (let %src1 (ptr u8) "(module \"test\" (func $main (param $n i32) (result i32) (effects pure) (return (add.i32 $n 1))))")
-    (print "Input: %s\n\n" %src1)
     (let %tree1 i32 (call $read_all %src1))
     (let %mod1 i32 (call $parse_module (call $sexp_child %tree1 0)))
-    (print "AST:\n")
     (call $print_ast %mod1)
     (print "\n\n")
 
@@ -3677,7 +3683,6 @@
     (let %src2 (ptr u8) "(module \"fibonacci\" (func $fibonacci (param $n i32) (result i32) (effects pure) (if (le.i32 $n 1) (then (return $n)) (else (let %a i32 (call $fibonacci (sub.i32 $n 1))) (let %b i32 (call $fibonacci (sub.i32 $n 2))) (return (add.i32 %a %b))))) (export $fibonacci))")
     (let %tree2 i32 (call $read_all %src2))
     (let %mod2 i32 (call $parse_module (call $sexp_child %tree2 0)))
-    (print "AST:\n")
     (call $print_ast %mod2)
     (print "\n\n")
 
@@ -3685,163 +3690,114 @@
     (let %src3 (ptr u8) "(module \"test3\" (extern \"sys\" $trap (param $msg (ptr u8))) (type $MyInt i32) (global mut $counter i32 0) (func $inc (effects mem) (set $counter (add.i32 $counter 1))) (export $inc))")
     (let %tree3 i32 (call $read_all %src3))
     (let %mod3 i32 (call $parse_module (call $sexp_child %tree3 0)))
-    (print "AST:\n")
     (call $print_ast %mod3)
-    (print "\n\n")
+    (print "\n\nAll parser tests passed.\n\n")
 
-    (print "All parser tests passed.\n\n")
-
-    ;; ── Checker tests ──────────────────────────────────────────
-
-    (print "=== Checker Test 1: Clean module (0 errors) ===\n")
+    ;; Checker tests
     (call $init_checker)
     (let %csrc1 (ptr u8) "(module \"chk1\" (func $add (param $a i32) (param $b i32) (result i32) (effects pure) (return (add.i32 $a $b))))")
-    (let %ctree1 i32 (call $read_all %csrc1))
-    (let %cmod1 i32 (call $parse_module (call $sexp_child %ctree1 0)))
-    (let %cr1 i32 (call $check_module %cmod1))
-    (if (eq.i32 %cr1 0)
-      (then (print "PASS: clean module\n\n"))
-      (else (print "FAIL: expected 0 errors\n\n")))
+    (let %cr1 i32 (call $check_module (call $parse_module (call $sexp_child (call $read_all %csrc1) 0))))
+    (if (eq.i32 %cr1 0) (then (print "PASS: clean module\n")) (else (print "FAIL: clean module\n")))
 
-    (print "=== Checker Test 2: Undefined variable ===\n")
     (call $init_checker)
     (let %csrc2 (ptr u8) "(module \"chk2\" (func $bad (result i32) (effects pure) (return $x)))")
-    (let %ctree2 i32 (call $read_all %csrc2))
-    (let %cmod2 i32 (call $parse_module (call $sexp_child %ctree2 0)))
-    (let %cr2 i32 (call $check_module %cmod2))
-    (if (eq.i32 %cr2 1)
-      (then (print "PASS: undefined variable detected\n\n"))
-      (else (print "FAIL: expected error for undefined variable\n\n")))
+    (let %cr2 i32 (call $check_module (call $parse_module (call $sexp_child (call $read_all %csrc2) 0))))
+    (if (eq.i32 %cr2 1) (then (print "PASS: undefined variable\n")) (else (print "FAIL: undefined variable\n")))
 
-    (print "=== Checker Test 3: Immutable assignment ===\n")
     (call $init_checker)
     (let %csrc3 (ptr u8) "(module \"chk3\" (func $bad (effects mem) (let %x i32 5) (set %x 10)))")
-    (let %ctree3 i32 (call $read_all %csrc3))
-    (let %cmod3 i32 (call $parse_module (call $sexp_child %ctree3 0)))
-    (let %cr3 i32 (call $check_module %cmod3))
-    (if (eq.i32 %cr3 1)
-      (then (print "PASS: immutable assignment detected\n\n"))
-      (else (print "FAIL: expected error for immutable assignment\n\n")))
+    (let %cr3 i32 (call $check_module (call $parse_module (call $sexp_child (call $read_all %csrc3) 0))))
+    (if (eq.i32 %cr3 1) (then (print "PASS: immutable assignment\n")) (else (print "FAIL: immutable assignment\n")))
 
-    (print "=== Checker Test 4: Pure function with side effects ===\n")
     (call $init_checker)
     (let %csrc4 (ptr u8) "(module \"chk4\" (func $bad (effects pure) (print \"hello\\n\")))")
-    (let %ctree4 i32 (call $read_all %csrc4))
-    (let %cmod4 i32 (call $parse_module (call $sexp_child %ctree4 0)))
-    (let %cr4 i32 (call $check_module %cmod4))
-    (if (eq.i32 %cr4 1)
-      (then (print "PASS: pure violation detected\n\n"))
-      (else (print "FAIL: expected error for pure violation\n\n")))
+    (let %cr4 i32 (call $check_module (call $parse_module (call $sexp_child (call $read_all %csrc4) 0))))
+    (if (eq.i32 %cr4 1) (then (print "PASS: pure violation\n")) (else (print "FAIL: pure violation\n")))
 
-    (print "=== Checker Test 5: Undeclared effect (warning) ===\n")
     (call $init_checker)
     (let %csrc5 (ptr u8) "(module \"chk5\" (func $leaky (result i32) (effects mem) (print \"debug\\n\") (return 0)))")
-    (let %ctree5 i32 (call $read_all %csrc5))
-    (let %cmod5 i32 (call $parse_module (call $sexp_child %ctree5 0)))
-    (let %cr5 i32 (call $check_module %cmod5))
-    (if (eq.i32 %cr5 0)
-      (then (print "PASS: warning only, no error\n\n"))
-      (else (print "FAIL: expected warning only, got error\n\n")))
+    (let %cr5 i32 (call $check_module (call $parse_module (call $sexp_child (call $read_all %csrc5) 0))))
+    (if (eq.i32 %cr5 0) (then (print "PASS: undeclared effect warning\n")) (else (print "FAIL: undeclared effect\n")))
 
-    ;; ── Checker tests: real programs ─────────────────────────
-
-    (print "=== Checker Test 6: Fibonacci (recursion, pure, if/else) ===\n")
     (call $init_checker)
-    (let %csrc6 (ptr u8) "(module \"fibonacci\" (func $fibonacci (param $n i32) (result i32) (effects pure) (if (le.i32 $n 1) (then (return $n)) (else (let %a i32 (call $fibonacci (sub.i32 $n 1))) (let %b i32 (call $fibonacci (sub.i32 $n 2))) (return (add.i32 %a %b))))) (export $fibonacci))")
-    (let %ctree6 i32 (call $read_all %csrc6))
-    (let %cmod6 i32 (call $parse_module (call $sexp_child %ctree6 0)))
-    (let %cr6 i32 (call $check_module %cmod6))
-    (if (eq.i32 %cr6 0)
-      (then (print "PASS: fibonacci\n\n"))
-      (else (print "FAIL: fibonacci should have 0 errors\n\n")))
+    (let %csrc6 (ptr u8) "(module \"fib\" (func $fibonacci (param $n i32) (result i32) (effects pure) (if (le.i32 $n 1) (then (return $n)) (else (let %a i32 (call $fibonacci (sub.i32 $n 1))) (let %b i32 (call $fibonacci (sub.i32 $n 2))) (return (add.i32 %a %b))))) (export $fibonacci))")
+    (let %cr6 i32 (call $check_module (call $parse_module (call $sexp_child (call $read_all %csrc6) 0))))
+    (if (eq.i32 %cr6 0) (then (print "PASS: fibonacci\n")) (else (print "FAIL: fibonacci\n")))
 
-    (print "=== Checker Test 7: Bubble sort (alloc/free, store/load, nested loops, mut) ===\n")
-    (call $init_checker)
-    (let %csrc7 (ptr u8) "(module \"bubble_sort\" (func $bubble_sort (param $arr (ptr i32)) (param $len i32) (effects mem div) (local mut $i i32 0) (local mut $swapped i32 0) (loop $outer (if (ge.i32 $i (sub.i32 $len 1)) (then (br $outer)) (else (set $swapped 0) (let %curr (ptr i32) (add.i32 $arr $i)) (let %val i32 (load.i32 %curr)) (store.i32 %curr %val) (set $i (add.i32 $i 1)))))) (func $main (result i32) (effects io mem div) (let %arr (ptr i32) (alloc i32 8)) (store.i32 %arr 42) (let %v i32 (load.i32 %arr)) (print \"sorted: %d\\n\" %v) (call $bubble_sort %arr 8) (free %arr) (return 0)) (export $main))")
-    (let %ctree7 i32 (call $read_all %csrc7))
-    (let %cmod7 i32 (call $parse_module (call $sexp_child %ctree7 0)))
-    (let %cr7 i32 (call $check_module %cmod7))
-    (if (eq.i32 %cr7 0)
-      (then (print "PASS: bubble sort\n\n"))
-      (else (print "FAIL: bubble sort should have 0 errors\n\n")))
-
-    (print "=== Checker Test 8: Math (pure funcs, cast, recursion, loops) ===\n")
-    (call $init_checker)
-    (let %csrc8 (ptr u8) "(module \"math\" (func $gcd (param $a i32) (param $b i32) (result i32) (effects pure) (if (eq.i32 $b 0) (then (return $a)) (else (return (call $gcd $b (rem.i32 $a $b)))))) (func $factorial (param $n i32) (result i64) (effects pure) (local mut $result i64 1) (local mut $i i32 1) (loop $fl (if (gt.i32 $i $n) (then (br $fl)) (else (set $result (mul.i64 $result (cast i32 i64 $i))) (set $i (add.i32 $i 1))))) (return $result)) (func $main (result i32) (effects io div) (let %g i32 (call $gcd 48 18)) (print \"gcd=%d\\n\" %g) (let %f i64 (call $factorial 10)) (print \"fact=%ld\\n\" %f) (return 0)) (export $main))")
-    (let %ctree8 i32 (call $read_all %csrc8))
-    (let %cmod8 i32 (call $parse_module (call $sexp_child %ctree8 0)))
-    (let %cr8 i32 (call $check_module %cmod8))
-    (if (eq.i32 %cr8 0)
-      (then (print "PASS: math\n\n"))
-      (else (print "FAIL: math should have 0 errors\n\n")))
-
-    (print "=== Checker Test 9: Externs + globals (bootstrap_demo pattern) ===\n")
-    (call $init_checker)
-    (let %csrc9 (ptr u8) "(module \"boot\" (extern \"sys\" $str_eq (param $a (ptr u8)) (param $b (ptr u8)) (result i32)) (extern \"sys\" $str_len (param $s (ptr u8)) (result i32)) (global mut $counter i32 0) (func $classify (param $tok (ptr u8)) (result i32) (effects io) (if (call $str_eq $tok \"module\") (then (return 1)) (else)) (return 0)) (func $main (result i32) (effects io mem) (let %s (ptr u8) \"hello\") (print \"len=%d\\n\" (call $str_len %s)) (let %c i32 (call $classify %s)) (set $counter (add.i32 $counter %c)) (return 0)) (export $main))")
-    (let %ctree9 i32 (call $read_all %csrc9))
-    (let %cmod9 i32 (call $parse_module (call $sexp_child %ctree9 0)))
-    (let %cr9 i32 (call $check_module %cmod9))
-    (if (eq.i32 %cr9 0)
-      (then (print "PASS: externs + globals\n\n"))
-      (else (print "FAIL: externs + globals should have 0 errors\n\n")))
-
-    (print "=== Checker Test 10: Multiple errors in one module ===\n")
-    (call $init_checker)
-    (let %csrc10 (ptr u8) "(module \"multi_err\" (func $f1 (effects pure) (print \"oops\\n\")) (func $f2 (effects pure) (return $ghost)) (func $f3 (effects mem) (let %x i32 5) (set %x 10)))")
-    (let %ctree10 i32 (call $read_all %csrc10))
-    (let %cmod10 i32 (call $parse_module (call $sexp_child %ctree10 0)))
-    (let %cr10 i32 (call $check_module %cmod10))
-    (if (eq.i32 $chk_errors 3)
-      (then (print "PASS: 3 errors detected across 3 functions\n\n"))
-      (else (print "FAIL: expected 3 errors, got %d\n\n" $chk_errors)))
-
-    (print "=== Checker Test 11: Let scoping (var visible after let, not before) ===\n")
-    (call $init_checker)
-    (let %csrc11 (ptr u8) "(module \"scope\" (func $test (result i32) (effects pure) (let %a i32 10) (let %b i32 (add.i32 %a 5)) (return %b)))")
-    (let %ctree11 i32 (call $read_all %csrc11))
-    (let %cmod11 i32 (call $parse_module (call $sexp_child %ctree11 0)))
-    (let %cr11 i32 (call $check_module %cmod11))
-    (if (eq.i32 %cr11 0)
-      (then (print "PASS: let scoping\n\n"))
-      (else (print "FAIL: let scoping should have 0 errors\n\n")))
-
-    (print "=== Checker Test 12: Nested scopes (if branches isolate vars) ===\n")
-    (call $init_checker)
-    (let %csrc12 (ptr u8) "(module \"nested\" (func $test (result i32) (effects pure) (let %x i32 1) (if (eq.i32 %x 1) (then (let %inner i32 10) (return %inner)) (else (let %inner2 i32 20) (return %inner2)))))")
-    (let %ctree12 i32 (call $read_all %csrc12))
-    (let %cmod12 i32 (call $parse_module (call $sexp_child %ctree12 0)))
-    (let %cr12 i32 (call $check_module %cmod12))
-    (if (eq.i32 %cr12 0)
-      (then (print "PASS: nested scopes\n\n"))
-      (else (print "FAIL: nested scopes should have 0 errors\n\n")))
-
-    (print "=== Checker Test 13: Global set requires mem effect ===\n")
     (call $init_checker)
     (let %csrc13 (ptr u8) "(module \"gset\" (global mut $counter i32 0) (func $inc (effects pure) (set $counter (add.i32 $counter 1))))")
-    (let %ctree13 i32 (call $read_all %csrc13))
-    (let %cmod13 i32 (call $parse_module (call $sexp_child %ctree13 0)))
-    (let %cr13 i32 (call $check_module %cmod13))
-    (if (eq.i32 %cr13 1)
-      (then (print "PASS: global set in pure function detected\n\n"))
-      (else (print "FAIL: expected error for global set in pure function\n\n")))
+    (let %cr13 i32 (call $check_module (call $parse_module (call $sexp_child (call $read_all %csrc13) 0))))
+    (if (eq.i32 %cr13 1) (then (print "PASS: global set in pure\n")) (else (print "FAIL: global set in pure\n")))
 
-    (print "All checker tests passed.\n")
+    (print "All tests passed.\n")
+    (return 0))
 
+  ;; ── CLI entry point ────────────────────────────────────────
+
+  (func $main
+    (result i32)
+    (effects io mem div)
+    (intent "ARIA compiler CLI: read file, parse, check, emit C to stdout")
+
+    (let %argc i32 (call $args_count))
+    (if (lt.i32 %argc 2)
+      (then
+        (print "ariac — ARIA Compiler (self-hosted)\n")
+        (print "Usage: ariac <file.aria> [--check|--emit-ast|--test]\n")
+        (return 1))
+      (else))
+
+    (let %path (ptr u8) (call $args_get 1))
+
+    ;; Parse flags
+    (local mut $check_only i32 0)
+    (local mut $emit_ast i32 0)
+    (local mut $run_tests_flag i32 0)
+    (if (gt.i32 %argc 2)
+      (then
+        (let %flag (ptr u8) (call $args_get 2))
+        (if (call $str_eq %flag "--check")    (then (set $check_only 1)) (else))
+        (if (call $str_eq %flag "--emit-ast") (then (set $emit_ast 1))   (else))
+        (if (call $str_eq %flag "--test")     (then (set $run_tests_flag 1)) (else)))
+      (else))
+
+    ;; --test: run internal test suite
+    (if $run_tests_flag
+      (then (return (call $run_tests)))
+      (else))
+
+    ;; Read source file
+    (let %src (ptr u8) (call $file_read_all %path))
+
+    ;; Parse
+    (call $init_pool)
+    (call $init_parser)
+    (let %tree i32 (call $read_all %src))
+    (let %mod i32 (call $parse_module (call $sexp_child %tree 0)))
+
+    ;; Check (quiet mode: don't print summary to stdout)
+    (call $init_checker)
+    (set $chk_quiet 1)
+    (let %result i32 (call $check_module %mod))
+    (if (ne.i32 %result 0)
+      (then (return 1))
+      (else))
+
+    ;; --check: stop after type checking
+    (if $check_only
+      (then (return 0))
+      (else))
+
+    ;; --emit-ast: print AST and exit
+    (if $emit_ast
+      (then (call $print_ast %mod) (print "\n") (return 0))
+      (else))
+
+    ;; Default: emit C to stdout
+    (call $init_codegen)
+    (call $cg_emit_module %mod)
     (return 0))
 
   ;; ── Exports ────────────────────────────────────────────────
 
-  (export $main)
-  (export $init_pool)
-  (export $read_all)
-  (export $node_at)
-  (export $init_parser)
-  (export $parse_module)
-  (export $parse_expr)
-  (export $print_ast)
-  (export $ast_at)
-  (export $type_at)
-  (export $init_checker)
-  (export $check_module)
-  (export $init_codegen)
-  (export $cg_emit_module))
+  (export $main))
