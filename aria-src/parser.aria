@@ -3220,6 +3220,36 @@
         (print "    fclose(f);\n")
         (print "}\n\n")
         (return))
+      (else))
+    ;; io $stdout_to_file
+    (if (call $str_eq %name "$stdout_to_file")
+      (then
+        (print "static int __saved_stdout_fd = -1;\n")
+        (print "void stdout_to_file(uint8_t* path) {\n")
+        (print "    fflush(stdout);\n")
+        (print "    __saved_stdout_fd = dup(STDOUT_FILENO);\n")
+        (print "    freopen((const char*)path, \"w\", stdout);\n")
+        (print "}\n\n")
+        (return))
+      (else))
+    ;; io $stdout_restore
+    (if (call $str_eq %name "$stdout_restore")
+      (then
+        (print "void stdout_restore(void) {\n")
+        (print "    fflush(stdout);\n")
+        (print "    dup2(__saved_stdout_fd, STDOUT_FILENO);\n")
+        (print "    close(__saved_stdout_fd);\n")
+        (print "    __saved_stdout_fd = -1;\n")
+        (print "}\n\n")
+        (return))
+      (else))
+    ;; sys $system
+    (if (call $str_eq %name "$system")
+      (then
+        (print "int32_t aria_system(uint8_t* cmd) {\n")
+        (print "    return system((const char*)cmd);\n")
+        (print "}\n\n")
+        (return))
       (else)))
 
   (func $cg_emit_module
@@ -3239,7 +3269,8 @@
     (print "#include <stdint.h>\n")
     (print "#include <stdbool.h>\n")
     (print "#include <math.h>\n")
-    (print "#include <string.h>\n\n")
+    (print "#include <string.h>\n")
+    (print "#include <unistd.h>\n\n")
 
     ;; Phase 2: Forward struct declarations
     (local mut $ci i32 0)

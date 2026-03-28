@@ -37,6 +37,9 @@
   (extern "sys" $args_count (result i32))
   (extern "sys" $args_get (param $i i32) (result (ptr u8)))
   (extern "io" $file_read_all (param $path (ptr u8)) (result (ptr u8)))
+  (extern "io" $stdout_to_file (param $path (ptr u8)))
+  (extern "io" $stdout_restore)
+  (extern "sys" $system (param $cmd (ptr u8)) (result i32))
 
   ;; ── SExp node type (produced by reader, consumed by parser) ─
 
@@ -1779,7 +1782,6 @@
   (global mut $chk_warns   i32     0)
   (global mut $chk_effects i32     0)
   (global mut $chk_fn_name (ptr u8) 0)
-  (global mut $chk_quiet   i32     0)
 
   ;; ── Checker init ───────────────────────────────────────────
 
@@ -1974,7 +1976,7 @@
     (param $msg (ptr u8))
     (effects io mem)
     (intent "Report a checker error")
-    (if $chk_quiet (then) (else (print "ERROR [%s]: %s\n" $chk_fn_name $msg)))
+    (print "ERROR [%s]: %s\n" $chk_fn_name $msg)
     (set $chk_errors (add.i32 $chk_errors 1)))
 
   (func $chk_error2
@@ -1982,14 +1984,14 @@
     (param $name (ptr u8))
     (effects io mem)
     (intent "Report a checker error with name context")
-    (if $chk_quiet (then) (else (print "ERROR [%s]: %s '%s'\n" $chk_fn_name $msg $name)))
+    (print "ERROR [%s]: %s '%s'\n" $chk_fn_name $msg $name)
     (set $chk_errors (add.i32 $chk_errors 1)))
 
   (func $chk_warn
     (param $msg (ptr u8))
     (effects io mem)
     (intent "Report a checker warning")
-    (if $chk_quiet (then) (else (print "WARN [%s]: %s\n" $chk_fn_name $msg)))
+    (print "WARN [%s]: %s\n" $chk_fn_name $msg)
     (set $chk_warns (add.i32 $chk_warns 1)))
 
   (func $chk_warn2
@@ -1997,7 +1999,7 @@
     (param $name (ptr u8))
     (effects io mem)
     (intent "Report a checker warning with name context")
-    (if $chk_quiet (then) (else (print "WARN [%s]: %s '%s'\n" $chk_fn_name $msg $name)))
+    (print "WARN [%s]: %s '%s'\n" $chk_fn_name $msg $name)
     (set $chk_warns (add.i32 $chk_warns 1)))
 
   ;; ── Global mutation check ────────────────────────────────
@@ -2451,7 +2453,7 @@
           (set $ci (add.i32 $ci 1)))))
 
     ;; Report summary
-    (if (eq.i32 $chk_quiet 0)
+    (if (gt.i32 (add.i32 $chk_errors $chk_warns) 0)
       (then (print "Checker: %d errors, %d warnings\n" $chk_errors $chk_warns))
       (else))
     (if (gt.i32 $chk_errors 0)
@@ -3228,6 +3230,36 @@
         (print "    fclose(f);\n")
         (print "}\n\n")
         (return))
+      (else))
+    ;; io $stdout_to_file
+    (if (call $str_eq %name "$stdout_to_file")
+      (then
+        (print "static int __saved_stdout_fd = -1;\n")
+        (print "void stdout_to_file(uint8_t* path) {\n")
+        (print "    fflush(stdout);\n")
+        (print "    __saved_stdout_fd = dup(STDOUT_FILENO);\n")
+        (print "    freopen((const char*)path, \"w\", stdout);\n")
+        (print "}\n\n")
+        (return))
+      (else))
+    ;; io $stdout_restore
+    (if (call $str_eq %name "$stdout_restore")
+      (then
+        (print "void stdout_restore(void) {\n")
+        (print "    fflush(stdout);\n")
+        (print "    dup2(__saved_stdout_fd, STDOUT_FILENO);\n")
+        (print "    close(__saved_stdout_fd);\n")
+        (print "    __saved_stdout_fd = -1;\n")
+        (print "}\n\n")
+        (return))
+      (else))
+    ;; sys $system
+    (if (call $str_eq %name "$system")
+      (then
+        (print "int32_t aria_system(uint8_t* cmd) {\n")
+        (print "    return system((const char*)cmd);\n")
+        (print "}\n\n")
+        (return))
       (else)))
 
   (func $cg_emit_module
@@ -3247,7 +3279,8 @@
     (print "#include <stdint.h>\n")
     (print "#include <stdbool.h>\n")
     (print "#include <math.h>\n")
-    (print "#include <string.h>\n\n")
+    (print "#include <string.h>\n")
+    (print "#include <unistd.h>\n\n")
 
     ;; Phase 2: Forward struct declarations
     (local mut $ci i32 0)
@@ -3663,88 +3696,53 @@
       (else))
     (print "<ast:%d>" %tag))
 
-  ;; ── Internal test suite ─────────────────────────────────────
-
-  (func $run_tests
-    (result i32)
-    (effects io mem div)
-    (intent "Run all internal parser and checker tests")
-    (call $init_pool)
-    (call $init_parser)
-
-    (print "=== Test 1: Simple function ===\n")
-    (let %src1 (ptr u8) "(module \"test\" (func $main (param $n i32) (result i32) (effects pure) (return (add.i32 $n 1))))")
-    (let %tree1 i32 (call $read_all %src1))
-    (let %mod1 i32 (call $parse_module (call $sexp_child %tree1 0)))
-    (call $print_ast %mod1)
-    (print "\n\n")
-
-    (print "=== Test 2: Fibonacci ===\n")
-    (let %src2 (ptr u8) "(module \"fibonacci\" (func $fibonacci (param $n i32) (result i32) (effects pure) (if (le.i32 $n 1) (then (return $n)) (else (let %a i32 (call $fibonacci (sub.i32 $n 1))) (let %b i32 (call $fibonacci (sub.i32 $n 2))) (return (add.i32 %a %b))))) (export $fibonacci))")
-    (let %tree2 i32 (call $read_all %src2))
-    (let %mod2 i32 (call $parse_module (call $sexp_child %tree2 0)))
-    (call $print_ast %mod2)
-    (print "\n\n")
-
-    (print "=== Test 3: Globals + types + extern ===\n")
-    (let %src3 (ptr u8) "(module \"test3\" (extern \"sys\" $trap (param $msg (ptr u8))) (type $MyInt i32) (global mut $counter i32 0) (func $inc (effects mem) (set $counter (add.i32 $counter 1))) (export $inc))")
-    (let %tree3 i32 (call $read_all %src3))
-    (let %mod3 i32 (call $parse_module (call $sexp_child %tree3 0)))
-    (call $print_ast %mod3)
-    (print "\n\nAll parser tests passed.\n\n")
-
-    ;; Checker tests
-    (call $init_checker)
-    (let %csrc1 (ptr u8) "(module \"chk1\" (func $add (param $a i32) (param $b i32) (result i32) (effects pure) (return (add.i32 $a $b))))")
-    (let %cr1 i32 (call $check_module (call $parse_module (call $sexp_child (call $read_all %csrc1) 0))))
-    (if (eq.i32 %cr1 0) (then (print "PASS: clean module\n")) (else (print "FAIL: clean module\n")))
-
-    (call $init_checker)
-    (let %csrc2 (ptr u8) "(module \"chk2\" (func $bad (result i32) (effects pure) (return $x)))")
-    (let %cr2 i32 (call $check_module (call $parse_module (call $sexp_child (call $read_all %csrc2) 0))))
-    (if (eq.i32 %cr2 1) (then (print "PASS: undefined variable\n")) (else (print "FAIL: undefined variable\n")))
-
-    (call $init_checker)
-    (let %csrc3 (ptr u8) "(module \"chk3\" (func $bad (effects mem) (let %x i32 5) (set %x 10)))")
-    (let %cr3 i32 (call $check_module (call $parse_module (call $sexp_child (call $read_all %csrc3) 0))))
-    (if (eq.i32 %cr3 1) (then (print "PASS: immutable assignment\n")) (else (print "FAIL: immutable assignment\n")))
-
-    (call $init_checker)
-    (let %csrc4 (ptr u8) "(module \"chk4\" (func $bad (effects pure) (print \"hello\\n\")))")
-    (let %cr4 i32 (call $check_module (call $parse_module (call $sexp_child (call $read_all %csrc4) 0))))
-    (if (eq.i32 %cr4 1) (then (print "PASS: pure violation\n")) (else (print "FAIL: pure violation\n")))
-
-    (call $init_checker)
-    (let %csrc5 (ptr u8) "(module \"chk5\" (func $leaky (result i32) (effects mem) (print \"debug\\n\") (return 0)))")
-    (let %cr5 i32 (call $check_module (call $parse_module (call $sexp_child (call $read_all %csrc5) 0))))
-    (if (eq.i32 %cr5 0) (then (print "PASS: undeclared effect warning\n")) (else (print "FAIL: undeclared effect\n")))
-
-    (call $init_checker)
-    (let %csrc6 (ptr u8) "(module \"fib\" (func $fibonacci (param $n i32) (result i32) (effects pure) (if (le.i32 $n 1) (then (return $n)) (else (let %a i32 (call $fibonacci (sub.i32 $n 1))) (let %b i32 (call $fibonacci (sub.i32 $n 2))) (return (add.i32 %a %b))))) (export $fibonacci))")
-    (let %cr6 i32 (call $check_module (call $parse_module (call $sexp_child (call $read_all %csrc6) 0))))
-    (if (eq.i32 %cr6 0) (then (print "PASS: fibonacci\n")) (else (print "FAIL: fibonacci\n")))
-
-    (call $init_checker)
-    (let %csrc13 (ptr u8) "(module \"gset\" (global mut $counter i32 0) (func $inc (effects pure) (set $counter (add.i32 $counter 1))))")
-    (let %cr13 i32 (call $check_module (call $parse_module (call $sexp_child (call $read_all %csrc13) 0))))
-    (if (eq.i32 %cr13 1) (then (print "PASS: global set in pure\n")) (else (print "FAIL: global set in pure\n")))
-
-    (print "All tests passed.\n")
-    (return 0))
-
   ;; ── CLI entry point ────────────────────────────────────────
+
+  (func $cg_write_cmd
+    (param $prefix (ptr u8))
+    (param $name (ptr u8))
+    (param $suffix (ptr u8))
+    (effects io mem div)
+    (intent "Write a shell command to /tmp/ariac_cmd.sh: prefix + name + suffix")
+    (call $stdout_to_file "/tmp/ariac_cmd.sh")
+    (print "%s" $prefix)
+    (call $cg_emit_name $name)
+    (print "%s" $suffix)
+    (call $stdout_restore))
 
   (func $main
     (result i32)
     (effects io mem div)
-    (intent "ARIA compiler CLI: read file, parse, check, emit C to stdout")
+    (intent "ARIA compiler CLI: compile ARIA-IR to native binary via C")
 
     (let %argc i32 (call $args_count))
+
+    ;; --help or no args
     (if (lt.i32 %argc 2)
       (then
-        (print "ariac — ARIA Compiler (self-hosted)\n")
-        (print "Usage: ariac <file.aria> [--check|--emit-ast|--test]\n")
-        (return 1))
+        (print "ariac — ARIA Compiler (self-hosted)\n\n")
+        (print "Usage: ariac <file.aria> [options]\n\n")
+        (print "Options:\n")
+        (print "  --run        Compile and execute\n")
+        (print "  --emit-c     Emit C to stdout\n")
+        (print "  --check      Type-check only\n")
+        (print "  --emit-ast   Print AST\n")
+        (print "  -o <name>    Output binary name\n")
+        (print "  --help       Show this help\n")
+        (return 0))
+      (else))
+    (if (call $str_eq (call $args_get 1) "--help")
+      (then
+        (print "ariac — ARIA Compiler (self-hosted)\n\n")
+        (print "Usage: ariac <file.aria> [options]\n\n")
+        (print "Options:\n")
+        (print "  --run        Compile and execute\n")
+        (print "  --emit-c     Emit C to stdout\n")
+        (print "  --check      Type-check only\n")
+        (print "  --emit-ast   Print AST\n")
+        (print "  -o <name>    Output binary name\n")
+        (print "  --help       Show this help\n")
+        (return 0))
       (else))
 
     (let %path (ptr u8) (call $args_get 1))
@@ -3752,19 +3750,27 @@
     ;; Parse flags
     (local mut $check_only i32 0)
     (local mut $emit_ast i32 0)
-    (local mut $run_tests_flag i32 0)
-    (if (gt.i32 %argc 2)
-      (then
-        (let %flag (ptr u8) (call $args_get 2))
-        (if (call $str_eq %flag "--check")    (then (set $check_only 1)) (else))
-        (if (call $str_eq %flag "--emit-ast") (then (set $emit_ast 1))   (else))
-        (if (call $str_eq %flag "--test")     (then (set $run_tests_flag 1)) (else)))
-      (else))
-
-    ;; --test: run internal test suite
-    (if $run_tests_flag
-      (then (return (call $run_tests)))
-      (else))
+    (local mut $emit_c i32 0)
+    (local mut $run_flag i32 0)
+    (local mut $out_name (ptr u8) 0)
+    (local mut $fi i32 2)
+    (loop $flags
+      (if (ge.i32 $fi %argc)
+        (then (br $flags))
+        (else
+          (let %flag (ptr u8) (call $args_get $fi))
+          (if (call $str_eq %flag "--check")    (then (set $check_only 1)) (else))
+          (if (call $str_eq %flag "--emit-ast") (then (set $emit_ast 1))   (else))
+          (if (call $str_eq %flag "--emit-c")   (then (set $emit_c 1))     (else))
+          (if (call $str_eq %flag "--run")      (then (set $run_flag 1))   (else))
+          (if (call $str_eq %flag "-o")
+            (then
+              (set $fi (add.i32 $fi 1))
+              (if (lt.i32 $fi %argc)
+                (then (set $out_name (call $args_get $fi)))
+                (else (print "ariac: -o requires an argument\n") (return 1))))
+            (else))
+          (set $fi (add.i32 $fi 1)))))
 
     ;; Read source file
     (let %src (ptr u8) (call $file_read_all %path))
@@ -3775,27 +3781,56 @@
     (let %tree i32 (call $read_all %src))
     (let %mod i32 (call $parse_module (call $sexp_child %tree 0)))
 
-    ;; Check (quiet mode: don't print summary to stdout)
+    ;; Get module name for output binary
+    (let %mod_node (ptr $ASTNode) (call $ast_at %mod))
+    (let %mod_name (ptr u8) (load.field %mod_node "str1"))
+
+    ;; Check
     (call $init_checker)
-    (set $chk_quiet 1)
     (let %result i32 (call $check_module %mod))
     (if (ne.i32 %result 0)
       (then (return 1))
       (else))
 
-    ;; --check: stop after type checking
-    (if $check_only
-      (then (return 0))
-      (else))
+    ;; --check
+    (if $check_only (then (return 0)) (else))
 
-    ;; --emit-ast: print AST and exit
+    ;; --emit-ast
     (if $emit_ast
       (then (call $print_ast %mod) (print "\n") (return 0))
       (else))
 
-    ;; Default: emit C to stdout
+    ;; Codegen: write C to temp file
     (call $init_codegen)
+    (call $stdout_to_file "/tmp/ariac_out.c")
     (call $cg_emit_module %mod)
+    (call $stdout_restore)
+
+    ;; --emit-c: dump C to stdout and exit
+    (if $emit_c
+      (then (call $system "cat /tmp/ariac_out.c") (return 0))
+      (else))
+
+    ;; Compile with gcc
+    ;; Build command: gcc -std=c99 -fwrapv -o <name> /tmp/ariac_out.c -lm
+    (local mut $bin_name (ptr u8) %mod_name)
+    (if (ne.i32 $out_name 0)
+      (then (set $bin_name $out_name))
+      (else))
+    (call $cg_write_cmd "gcc -std=c99 -fwrapv -o " $bin_name " /tmp/ariac_out.c -lm\n")
+    (let %gcc_ret i32 (call $system "sh /tmp/ariac_cmd.sh"))
+    (if (ne.i32 %gcc_ret 0)
+      (then (print "ariac: gcc failed\n") (return 1))
+      (else))
+
+    ;; --run: also execute the binary
+    (if $run_flag
+      (then
+        (call $cg_write_cmd "./" $bin_name "\n")
+        (let %run_ret i32 (call $system "sh /tmp/ariac_cmd.sh"))
+        (return %run_ret))
+      (else))
+
     (return 0))
 
   ;; ── Exports ────────────────────────────────────────────────

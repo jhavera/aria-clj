@@ -377,7 +377,23 @@ int32_t args_count(void) { return __aria_argc; }"
    ["sys" "$str_len"]
    "int32_t str_len(uint8_t* s) { return (int32_t)strlen((const char*)s); }"
    ["sys" "$str_eq"]
-   "int32_t str_eq(uint8_t* a, uint8_t* b) { return strcmp((const char*)a, (const char*)b) == 0; }"})
+   "int32_t str_eq(uint8_t* a, uint8_t* b) { return strcmp((const char*)a, (const char*)b) == 0; }"
+   ["io" "$stdout_to_file"]
+   "static int __saved_stdout_fd = -1;
+void stdout_to_file(uint8_t* path) {
+    fflush(stdout);
+    __saved_stdout_fd = dup(STDOUT_FILENO);
+    freopen((const char*)path, \"w\", stdout);
+}"
+   ["io" "$stdout_restore"]
+   "void stdout_restore(void) {
+    fflush(stdout);
+    dup2(__saved_stdout_fd, STDOUT_FILENO);
+    close(__saved_stdout_fd);
+    __saved_stdout_fd = -1;
+}"
+   ["sys" "$system"]
+   "int32_t aria_system(uint8_t* cmd) { return system((const char*)cmd); }"})
 
 (defn- needs-sys-args? [externs]
   (some #(and (= (:extern/module %) "sys")
@@ -411,6 +427,7 @@ int32_t args_count(void) { return __aria_argc; }"
     (emit-raw! cg "#include <stdbool.h>")
     (emit-raw! cg "#include <math.h>")
     (emit-raw! cg "#include <string.h>")
+    (emit-raw! cg "#include <unistd.h>")
     (emit-raw! cg "")
 
     ;; Forward struct declarations (needed for self-referential types)
