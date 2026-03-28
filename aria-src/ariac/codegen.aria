@@ -967,4 +967,5 @@
 
   (export $init_codegen)
   (export $cg_emit_module)
+  (export $cg_emit_name)
   (export $cg_has_args))

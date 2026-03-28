@@ -396,7 +396,7 @@
     (let %sexp_root i32 (call $reader.read_all %src))
 
     ;; Parse module
-    (let %mod_ast i32 (call $parser.parse_module %sexp_root))
+    (let %mod_ast i32 (call $parser.parse_module (call $types.sexp_child %sexp_root 0)))
     (let %mod_node (ptr $types.ASTNode) (call $types.ast_at %mod_ast))
     (let %mod_name (ptr u8) (load.field %mod_node "str1"))
 

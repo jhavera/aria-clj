@@ -3798,27 +3798,62 @@
   (func $cg_emit_call_name
     (param $name (ptr u8))
     (effects io mem div)
-    (intent "Emit a function call name, resolving qualified names to module__func")
+    (intent "Emit a function call name, resolving qualified names to module__func or bare for externs")
     ;; Check if qualified ($mod.func)
     (let %mod_buf (ptr (ptr u8)) (alloc (ptr u8) 1))
     (let %func_buf (ptr (ptr u8)) (alloc (ptr u8) 1))
     (let %is_qual i32 (call $split_qualified_name $name %mod_buf %func_buf))
     (if (ne.i32 %is_qual 0)
       (then
-        ;; Qualified: emit mod__func
         (let %mn (ptr u8) (load.i32 %mod_buf))
         (let %fn (ptr u8) (load.i32 %func_buf))
         (free %mod_buf)
         (free %func_buf)
-        (print "%s__" %mn)
-        (call $cg_emit_name %fn)
+        ;; Check if target is a regular function (tag 28) via resolve
+        (let %resolved i32 (call $resolve_qualified_fn $name 0))
+        (if (ge.i32 %resolved 0)
+          (then
+            ;; Regular function: emit mod__func
+            (print "%s__" %mn)
+            (call $cg_emit_name %fn))
+          (else
+            ;; Extern or not found: emit bare function name
+            (call $cg_emit_name %fn)))
         (return))
       (else))
     (free %mod_buf)
     (free %func_buf)
     ;; Unqualified: prefix with current module if we're in multi-module mode
+    ;; BUT only if the name is a regular function (tag 28) in the current module
+    ;; Externs (tag 32) should not be prefixed
     (if (ne.i32 $cg_current_mod 0)
-      (then (call $cg_emit_prefixed_name $cg_current_mod $name))
+      (then
+        ;; Check if this is a function in the current module
+        (let %cur_mod_idx i32 (call $find_module_by_name $cg_current_mod))
+        (if (ne.i32 %cur_mod_idx -1)
+          (then
+            (let %cur_ast i32 (load.i32 (add.i32 $mod_asts %cur_mod_idx)))
+            (let %cur_mn (ptr $ASTNode) (call $ast_at %cur_ast))
+            (let %cur_total i32 (load.field %cur_mn "count"))
+            (let %cur_arr (ptr i32) (load.field %cur_mn "children"))
+            (local mut $is_local_func i32 0)
+            (local mut $fi i32 0)
+            (loop $find_func
+              (if (ge.i32 $fi %cur_total) (then (br $find_func))
+                (else
+                  (let %fidx i32 (load.i32 (add.i32 %cur_arr $fi)))
+                  (let %ffn (ptr $ASTNode) (call $ast_at %fidx))
+                  (if (eq.i32 (load.field %ffn "tag") 28)
+                    (then
+                      (if (call $str_eq (load.field %ffn "str1") $name)
+                        (then (set $is_local_func 1) (br $find_func))
+                        (else)))
+                    (else))
+                  (set $fi (add.i32 $fi 1)))))
+            (if $is_local_func
+              (then (call $cg_emit_prefixed_name $cg_current_mod $name))
+              (else (call $cg_emit_name $name))))
+          (else (call $cg_emit_name $name))))
       (else (call $cg_emit_name $name))))
 
   (func $cg_emit_all_modules
@@ -3946,7 +3981,7 @@
           (set $mi (add.i32 $mi 1)))))
     (print "\n")
 
-    ;; Phase 6: Globals (all modules, prefixed)
+    ;; Phase 6: Globals (all modules, unprefixed — globals are unique by convention)
     (set $mi 0)
     (loop $globals_phase
       (if (ge.i32 $mi $mod_pos) (then (br $globals_phase))
@@ -3966,7 +4001,7 @@
                   (then
                     (call $cg_emit_type (load.field %cn "type1"))
                     (print " ")
-                    (call $cg_emit_prefixed_name %mod_name (load.field %cn "str1"))
+                    (call $cg_emit_name (load.field %cn "str1"))
                     (if (ne.i32 (load.field %cn "left") -1)
                       (then (print " = ") (call $cg_emit_expr (load.field %cn "left")))
                       (else))
@@ -4048,9 +4083,7 @@
         (print "int main(int argc, char** argv) {\n")
         (print "    __aria_argc = argc;\n")
         (print "    __aria_argv = argv;\n")
-        (print "    return ")
-        (call $cg_emit_prefixed_name %entry_name "$main")
-        (print "();\n}\n"))
+        (print "    return aria_main();\n}\n"))
       (else
         (print "int main(void) { return ")
         (call $cg_emit_prefixed_name %entry_name "$main")
