@@ -2556,7 +2556,12 @@
         (if (call $str_eq %name "f64")  (then (print "double") (return)) (else))
         (if (call $str_eq %name "bool") (then (print "bool") (return)) (else))
         (if (call $str_eq %name "void") (then (print "void") (return)) (else))
-        (call $cg_emit_name %name) (return))
+        ;; Named type (possibly qualified: $types.Point -> Point)
+        (let %tdot i32 (call $str_find_dot %name))
+        (if (ne.i32 %tdot -1)
+          (then (call $cg_emit_name (add.i32 %name (add.i32 %tdot 1))))
+          (else (call $cg_emit_name %name)))
+        (return))
       (else))
     ;; Pointer
     (if (eq.i32 %kind 1)
@@ -2566,9 +2571,18 @@
     (if (eq.i32 %kind 2)
       (then (call $cg_emit_type (load.field %t "inner")) (return))
       (else))
-    ;; Struct
+    ;; Struct: strip module prefix if qualified ($types.Point -> Point)
     (if (eq.i32 %kind 4)
-      (then (call $cg_emit_name (load.field %t "name")) (return))
+      (then
+        (let %tname (ptr u8) (load.field %t "name"))
+        (let %dot i32 (call $str_find_dot %tname))
+        (if (ne.i32 %dot -1)
+          (then
+            ;; Qualified: emit only the part after the dot
+            (let %after_dot (ptr u8) (add.i32 %tname (add.i32 %dot 1)))
+            (call $cg_emit_name %after_dot))
+          (else (call $cg_emit_name %tname)))
+        (return))
       (else))
     (print "void"))
 
@@ -3846,9 +3860,9 @@
                         (if (eq.i32 (load.field %tt "kind") 4)
                           (then
                             (print "typedef struct ")
-                            (call $cg_emit_prefixed_name %mod_name (load.field %cn "str1"))
+                            (call $cg_emit_name (load.field %cn "str1"))
                             (print " ")
-                            (call $cg_emit_prefixed_name %mod_name (load.field %cn "str1"))
+                            (call $cg_emit_name (load.field %cn "str1"))
                             (print ";\n"))
                           (else)))
                       (else)))
