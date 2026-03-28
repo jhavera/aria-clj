@@ -127,6 +127,9 @@
           (when (env-lookup env (:name node))
             (add-error! checker
                         (str "Cannot assign to immutable variable '" (:name node) "'"))))
+        ;; Setting a global is a mem effect
+        (when (contains? @(:globals checker) (:name node))
+          (swap! effects conj :mem))
         (check-node checker (:value node) env effects)
         nil)
 
