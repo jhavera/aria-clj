@@ -36,6 +36,16 @@
 
 ;; ── Type Mapping ──────────────────────────────────────────────
 
+(defn- var->c
+  "Convert ARIA variable name ($foo, %bar) to valid C identifier."
+  [name]
+  (-> name
+      (str/replace #"^[$%]" "")
+      (str/replace "." "_")
+      (str/replace "-" "_")
+      ;; Handle reader-processed sigils (aria$foo, aria%foo, aria/foo)
+      (str/replace #"^aria[$%/]" "")))
+
 (def ^:private type-map
   {"i1" "int8_t" "i8" "int8_t" "i16" "int16_t"
    "i32" "int32_t" "i64" "int64_t"
@@ -46,21 +56,16 @@
 
 (defn- type->c [t]
   (case (:type/kind t)
-    :primitive (get type-map (:type/name t) (:type/name t))
+    :primitive (let [n (:type/name t)]
+                 (or (get type-map n)
+                     ;; Named type reference (e.g. $Node → Node)
+                     (var->c n)))
     :ptr       (str (type->c (:type/pointee t)) "*")
     :array     (type->c (:type/elem t))
     :struct    (if (seq (:type/name t))
-                 (str "struct " (:type/name t))
+                 (str "struct " (var->c (:type/name t)))
                  "struct")
     "void"))
-
-(defn- var->c
-  "Convert ARIA variable name ($foo, %bar) to valid C identifier."
-  [name]
-  (-> name
-      (str/replace #"^[$%]" "")
-      (str/replace "." "_")
-      (str/replace "-" "_")))
 
 ;; ── Expression Codegen ────────────────────────────────────────
 
@@ -92,7 +97,7 @@
                 (str/replace "\"" "\\\"")
                 (str/replace "\n" "\\n")
                 (str/replace "\t" "\\t"))]
-      (str "\"" s "\""))
+      (str "(uint8_t*)\"" s "\""))
 
     :var-ref
     (var->c (:name node))
@@ -266,15 +271,16 @@
 ;; ── Top-Level Codegen ─────────────────────────────────────────
 
 (defn- gen-struct! [cg stype name]
-  (emit-raw! cg (str "typedef struct " name " {"))
+  (emit-raw! cg (str "typedef struct " (var->c name) " {"))
   (swap! (:indent cg) inc)
   (doseq [[fname ftype] (:type/fields stype)]
-    (let [c-type (type->c ftype)]
+    (let [c-type (type->c ftype)
+          c-fname (var->c fname)]
       (if (= :array (:type/kind ftype))
-        (emit! cg (str c-type " " fname "[" (:type/size ftype) "];"))
-        (emit! cg (str c-type " " fname ";")))))
+        (emit! cg (str c-type " " c-fname "[" (:type/size ftype) "];"))
+        (emit! cg (str c-type " " c-fname ";")))))
   (swap! (:indent cg) dec)
-  (emit-raw! cg (str "} " name ";"))
+  (emit-raw! cg (str "} " (var->c name) ";"))
   (emit-raw! cg ""))
 
 (defn- has-ptr-param? [func]
@@ -336,10 +342,79 @@
     (emit-raw! cg "}")
     (emit-raw! cg "")))
 
+;; ── Extern Runtime Implementations ──────────────────────────
+
+(def ^:private extern-impls
+  "C implementations for ARIA extern functions, keyed by [module name]."
+  {["io" "$file_read_all"]
+   "uint8_t* file_read_all(uint8_t* path) {
+    FILE* f = fopen((const char*)path, \"rb\");
+    if (!f) { fprintf(stderr, \"Error: cannot open '%s'\\n\", path); exit(1); }
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    uint8_t* buf = (uint8_t*)malloc(len + 1);
+    fread(buf, 1, len, f);
+    buf[len] = 0;
+    fclose(f);
+    return buf;
+}"
+   ["io" "$file_write"]
+   "void file_write(uint8_t* path, uint8_t* content) {
+    FILE* f = fopen((const char*)path, \"wb\");
+    if (!f) { fprintf(stderr, \"Error: cannot write '%s'\\n\", path); exit(1); }
+    fputs((const char*)content, f);
+    fclose(f);
+}"
+   ["sys" "$args_count"]
+   "static int __aria_argc;
+static char** __aria_argv;
+int32_t args_count(void) { return __aria_argc; }"
+   ["sys" "$args_get"]
+   "uint8_t* args_get(int32_t i) { return (uint8_t*)__aria_argv[i]; }"
+   ["sys" "$trap"]
+   "void trap(uint8_t* msg) { fprintf(stderr, \"TRAP: %s\\n\", (const char*)msg); exit(1); }"
+   ["sys" "$str_len"]
+   "int32_t str_len(uint8_t* s) { return (int32_t)strlen((const char*)s); }"
+   ["sys" "$str_eq"]
+   "int32_t str_eq(uint8_t* a, uint8_t* b) { return strcmp((const char*)a, (const char*)b) == 0; }"
+   ["io" "$stdout_to_file"]
+   "static int __saved_stdout_fd = -1;
+void stdout_to_file(uint8_t* path) {
+    fflush(stdout);
+    __saved_stdout_fd = dup(STDOUT_FILENO);
+    freopen((const char*)path, \"w\", stdout);
+}"
+   ["io" "$stdout_restore"]
+   "void stdout_restore(void) {
+    fflush(stdout);
+    dup2(__saved_stdout_fd, STDOUT_FILENO);
+    close(__saved_stdout_fd);
+    __saved_stdout_fd = -1;
+}"
+   ["sys" "$system"]
+   "int32_t aria_system(uint8_t* cmd) { return system((const char*)cmd); }"})
+
+(defn- needs-sys-args? [externs]
+  (some #(and (= (:extern/module %) "sys")
+              (#{"$args_count" "$args_get"} (:name %)))
+        externs))
+
+(defn- gen-extern-impls! [cg externs]
+  (let [emitted (atom #{})]
+    (doseq [ext externs]
+      (let [key [(:extern/module ext) (:name ext)]]
+        (when-let [impl (get extern-impls key)]
+          (when-not (@emitted key)
+            (swap! emitted conj key)
+            (emit-raw! cg impl)
+            (emit-raw! cg "")))))))
+
 (defn generate
   "Generate complete C99 source from an ARIA module AST."
   [module]
-  (let [cg (make-codegen)]
+  (let [cg (make-codegen)
+        externs (or (:externs module) [])]
     ;; Header
     (emit-raw! cg "/* ═══════════════════════════════════════════════════════════")
     (emit-raw! cg (str "   Generated from ARIA module: " (:name module)))
@@ -352,7 +427,20 @@
     (emit-raw! cg "#include <stdbool.h>")
     (emit-raw! cg "#include <math.h>")
     (emit-raw! cg "#include <string.h>")
+    (emit-raw! cg "#include <unistd.h>")
     (emit-raw! cg "")
+
+    ;; Forward struct declarations (needed for self-referential types)
+    (doseq [td (:types module)]
+      (when (= :struct (:type/kind (:aria/type td)))
+        (let [cname (var->c (:name td))]
+          (emit-raw! cg (str "typedef struct " cname " " cname ";")))))
+    (when (seq (:types module))
+      (emit-raw! cg ""))
+
+    ;; Extern runtime implementations
+    (when (seq externs)
+      (gen-extern-impls! cg externs))
 
     ;; Type definitions
     (doseq [td (:types module)]
@@ -360,18 +448,22 @@
         (gen-struct! cg (:aria/type td) (:name td))))
 
     ;; Forward declarations
-    (doseq [func (:functions module)]
-      (let [ret-type (if (:result func) (type->c (:result func)) "void")
-            params (if (seq (:params func))
-                     (str/join ", "
-                               (map (fn [p]
-                                      (str (type->c (:param/type p)) " "
-                                           (var->c (:param/name p))))
-                                    (:params func)))
-                     "void")
-            fname (var->c (:name func))
-            attr (or (effects->c-attr func) "")]
-        (emit-raw! cg (str attr ret-type " " fname "(" params ");"))))
+    (let [sys-args? (needs-sys-args? externs)]
+      (doseq [func (:functions module)]
+        (let [ret-type (if (:result func) (type->c (:result func)) "void")
+              params (if (seq (:params func))
+                       (str/join ", "
+                                 (map (fn [p]
+                                        (str (type->c (:param/type p)) " "
+                                             (var->c (:param/name p))))
+                                      (:params func)))
+                       "void")
+              fname (if (and (= (:name func) "$main") sys-args?)
+                      "aria_main"
+                      (var->c (:name func)))
+              attr (or (effects->c-attr func) "")]
+          (emit-raw! cg (str attr ret-type " " fname "(" params ");")))))
+
     (emit-raw! cg "")
 
     ;; Globals
@@ -386,6 +478,18 @@
 
     ;; Functions
     (doseq [func (:functions module)]
-      (gen-function! cg func))
+      ;; When sys args are used, rename $main to aria_main and generate a wrapper
+      (if (and (= (:name func) "$main") (needs-sys-args? externs))
+        (let [renamed (assoc func :name "$aria_main")]
+          (gen-function! cg renamed))
+        (gen-function! cg func)))
+
+    ;; If sys args used, generate main wrapper that captures argc/argv
+    (when (needs-sys-args? externs)
+      (emit-raw! cg "int main(int argc, char** argv) {")
+      (emit-raw! cg "    __aria_argc = argc;")
+      (emit-raw! cg "    __aria_argv = argv;")
+      (emit-raw! cg "    return aria_main();")
+      (emit-raw! cg "}"))
 
     (str/join "\n" @(:output cg))))

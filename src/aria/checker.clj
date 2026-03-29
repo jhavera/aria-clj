@@ -59,7 +59,8 @@
   {:errors   (atom [])
    :warnings (atom [])
    :functions (atom {})
-   :type-defs (atom {})})
+   :type-defs (atom {})
+   :globals  (atom {})})
 
 (defn- add-error! [checker msg]
   (swap! (:errors checker) conj msg))
@@ -87,7 +88,7 @@
     (ast/primitive "bool")
 
     :string-literal
-    (ast/primitive "str")
+    (ast/ptr-type (ast/primitive "u8"))
 
     :var-ref
     (let [typ (env-lookup env (:name node))]
@@ -126,6 +127,9 @@
           (when (env-lookup env (:name node))
             (add-error! checker
                         (str "Cannot assign to immutable variable '" (:name node) "'"))))
+        ;; Setting a global is a mem effect
+        (when (contains? @(:globals checker) (:name node))
+          (swap! effects conj :mem))
         (check-node checker (:value node) env effects)
         nil)
 
@@ -238,6 +242,10 @@
   "Type-check a single function."
   [checker func]
   (let [env (make-env)
+        ;; Bind globals
+        env (reduce (fn [e [gname ginfo]]
+                      (env-define e gname (:type ginfo) (:mutable? ginfo)))
+                    env @(:globals checker))
         ;; Bind params
         env (reduce (fn [e p]
                       (env-define e (:param/name p) (:param/type p) false))
@@ -266,6 +274,11 @@
   ;; Register type defs
   (doseq [td (:types module)]
     (swap! (:type-defs checker) assoc (:name td) (:aria/type td)))
+  ;; Register globals
+  (doseq [g (:globals module)]
+    (swap! (:globals checker) assoc (:name g)
+           {:type (or (:aria/type g) (ast/primitive "i32"))
+            :mutable? (:mutable? g)}))
   ;; Register function signatures
   (doseq [func (:functions module)]
     (swap! (:functions checker) assoc (:name func) func))

@@ -137,22 +137,70 @@ Functions and blocks carry human-readable `intent` annotations describing their 
 (free %arr)                          ; deallocate
 ```
 
-## Examples
+## ariac — Self-hosted compiler
 
-Three example programs are included in `examples/`:
+`ariac` is the ARIA compiler written in ARIA-IR itself (~3800 LOC). It compiles ARIA source to native binaries via C99 and can compile itself (bootstrap).
+
+### Building ariac
+
+```bash
+# Build ariac from source using the Clojure compiler
+clojure -M:run aria-src/ariac.aria --backend c -o /tmp/ariac.c
+gcc -std=c99 -fwrapv -o ariac /tmp/ariac.c -lm
+```
+
+### Using ariac
+
+```
+ariac <file.aria>              # Compile to native binary (name = module name)
+ariac <file.aria> --run        # Compile and execute
+ariac <file.aria> --emit-c     # Emit C to stdout
+ariac <file.aria> --check      # Type-check only
+ariac <file.aria> --emit-ast   # Print AST
+ariac <file.aria> -o <name>    # Compile with custom output name
+ariac --help                   # Show usage
+```
+
+### Running examples with ariac
+
+```bash
+ariac examples/fibonacci.aria --run
+ariac examples/bubble_sort.aria --run
+ariac examples/math_demo.aria --run
+ariac examples/float_demo.aria --run
+ariac examples/bootstrap_demo.aria --run
+```
+
+### Bootstrap verification
+
+```bash
+# ariac compiles itself
+ariac aria-src/ariac.aria -o ariac2
+
+# The self-compiled compiler works
+./ariac2 examples/fibonacci.aria --run
+```
+
+## Examples
 
 | File | Demonstrates |
 |------|-------------|
 | `fibonacci.aria` | Recursion, conditionals, iterative loops |
 | `bubble_sort.aria` | Pointers, memory ops, nested loops, mutation |
 | `math_demo.aria` | Multiple algorithms (GCD, factorial, primality, fast exponentiation), type casting |
+| `float_demo.aria` | Float arithmetic, pi, temperature conversion, int-to-float cast |
+| `bootstrap_demo.aria` | Strings as `(ptr u8)`, externs, file I/O, CLI args |
 
-Run any example:
+Run any example with the Clojure compiler:
 
 ```bash
 clojure -M:run examples/fibonacci.aria --run
-clojure -M:run examples/bubble_sort.aria --run
-clojure -M:run examples/math_demo.aria --run
+```
+
+Or with ariac (once built):
+
+```bash
+ariac examples/fibonacci.aria --run
 ```
 
 ## AI generation
@@ -200,6 +248,8 @@ prompt → Claude API → Reader → Parser → Checker → (retry) → Codegen 
 | **Generator** | `src/aria/gen.clj` | LLM-powered ARIA-IR generation from natural language (calls Claude API, validates, retries) |
 
 The compiler CLI (`src/aria/main.clj`) orchestrates the pipeline and optionally invokes gcc to produce a native binary. The generator CLI (`src/aria/gen.clj`) adds an AI front-end that produces validated ARIA-IR from prompts.
+
+The self-hosted compiler (`aria-src/ariac.aria`) implements the same pipeline in ARIA-IR itself, bootstrapping through the Clojure compiler to produce a native `ariac` binary.
 
 ## License
 

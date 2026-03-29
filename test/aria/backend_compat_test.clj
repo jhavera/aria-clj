@@ -249,9 +249,9 @@
 ;; ── Full WASI Integration ────────────────────────────────────
 
 (deftest wasi-fibonacci-with-print-test
-  (testing "fibonacci-wasi.aria generates valid WASI WAT"
+  (testing "fibonacci.aria generates valid WASI WAT"
     (let [wat (codegen-wat/generate
-                (parser/parse-file "examples/fibonacci-wasi.aria")
+                (parser/parse-file "examples/fibonacci.aria")
                 {:wasi? true})]
       (is (str/includes? wat "wasi_snapshot_preview1"))
       (is (str/includes? wat "fd_write"))

@@ -64,8 +64,12 @@
         "struct" (let [sname (if (string? (second form)) (second form) "")
                        fields-start (if (string? (second form)) 2 1)
                        fields (mapv (fn [f]
-                                      [(sym-name (first f))
-                                       (parse-type (second f))])
+                                      ;; Support both formats:
+                                      ;; (field $name Type) — new explicit form
+                                      ;; ($name Type)       — short form
+                                      (if (= "field" (sym-name (first f)))
+                                        [(sym-name (second f)) (parse-type (nth f 2))]
+                                        [(sym-name (first f)) (parse-type (second f))]))
                                     (drop fields-start form))]
                    (ast/struct-type sname fields))
         "func"   (let [param-types (mapv parse-type (second form))
