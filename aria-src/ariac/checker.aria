@@ -48,6 +48,12 @@
   (global mut $chk_effects i32     0)
   (global mut $chk_fn_name (ptr u8) 0)
 
+  ;; Field state tracking: (var_name, field_name) → alias to sym index
+  (global mut $fst_vars    (ptr (ptr u8)) 0)
+  (global mut $fst_fields  (ptr (ptr u8)) 0)
+  (global mut $fst_alias   (ptr i32)      0)
+  (global mut $fst_pos     i32            0)
+
   ;; ── Checker init ───────────────────────────────────────────
 
   (func $init_checker
@@ -80,6 +86,11 @@
     (set $chk_warns  0)
     (set $chk_effects 0)
     (set $chk_fn_name 0)
+    ;; Field state tracking
+    (set $fst_vars   (alloc (ptr u8) 256))
+    (set $fst_fields (alloc (ptr u8) 256))
+    (set $fst_alias  (alloc i32 256))
+    (set $fst_pos    0)
     ;; Well-known types: i32
     (let %t0 i32 (call $types.type_alloc))
     (let %p0 (ptr $types.TypeInfo) (call $types.type_at %t0))
@@ -191,6 +202,84 @@
           (if (call $types.str_eq (load.i32 (add.i32 $sym_names $i)) $name)
             (then (store.i32 (add.i32 $sym_states $i) 1) (return))
             (else (set $i (sub.i32 $i 1))))))))
+
+  ;; ── Field state tracking helpers ─────────────────────────────
+
+  (func $fst_record
+    (param $var_name (ptr u8))
+    (param $field_name (ptr u8))
+    (param $alias_idx i32)
+    (effects mem io)
+    (intent "Record that var.field holds a pointer aliasing sym[alias_idx]")
+    (if (ge.i32 $fst_pos 256) (then (return)) (else))
+    (store.i32 (add.i32 $fst_vars $fst_pos) $var_name)
+    (store.i32 (add.i32 $fst_fields $fst_pos) $field_name)
+    (store.i32 (add.i32 $fst_alias $fst_pos) $alias_idx)
+    (set $fst_pos (add.i32 $fst_pos 1)))
+
+  (func $fst_check_freed
+    (param $var_name (ptr u8))
+    (param $field_name (ptr u8))
+    (result i32)
+    (effects mem io div)
+    (intent "Check if a struct field holds a freed pointer. Returns 1 if freed, 0 otherwise")
+    (local mut $i i32 0)
+    (loop $scan
+      (if (ge.i32 $i $fst_pos) (then (br $scan))
+        (else
+          (if (call $types.str_eq (load.i32 (add.i32 $fst_vars $i)) $var_name)
+            (then
+              (if (call $types.str_eq (load.i32 (add.i32 $fst_fields $i)) $field_name)
+                (then
+                  (let %aidx i32 (load.i32 (add.i32 $fst_alias $i)))
+                  (if (ne.i32 %aidx -1)
+                    (then
+                      (if (eq.i32 (load.i32 (add.i32 $sym_states %aidx)) 1)
+                        (then (return 1))
+                        (else)))
+                    (else)))
+                (else)))
+            (else))
+          (set $i (add.i32 $i 1)))))
+    (return 0))
+
+  ;; ── Pointer operand detection ──────────────────────────────
+
+  (func $chk_find_pointer_operand
+    (param $binop_aidx i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Check if a bin-op has a pointer-typed var-ref operand, return its sym index or -1")
+    (let %bn (ptr $types.ASTNode) (call $types.ast_at $binop_aidx))
+    ;; Check left operand
+    (let %left i32 (load.field %bn "left"))
+    (if (ne.i32 %left -1)
+      (then
+        (let %ln (ptr $types.ASTNode) (call $types.ast_at %left))
+        (if (eq.i32 (load.field %ln "tag") 4)
+          (then
+            (let %lname (ptr u8) (load.field %ln "str1"))
+            (let %ltype i32 (call $chk_sym_lookup %lname))
+            (if (call $is_pointer_type %ltype)
+              (then (return (call $chk_sym_find_index %lname)))
+              (else)))
+          (else)))
+      (else))
+    ;; Check right operand
+    (let %right i32 (load.field %bn "right"))
+    (if (ne.i32 %right -1)
+      (then
+        (let %rn (ptr $types.ASTNode) (call $types.ast_at %right))
+        (if (eq.i32 (load.field %rn "tag") 4)
+          (then
+            (let %rname (ptr u8) (load.field %rn "str1"))
+            (let %rtype i32 (call $chk_sym_lookup %rname))
+            (if (call $is_pointer_type %rtype)
+              (then (return (call $chk_sym_find_index %rname)))
+              (else)))
+          (else)))
+      (else))
+    (return -1))
 
   (func $chk_sym_find_index
     (param $name (ptr u8))
@@ -532,11 +621,19 @@
                         (let %alias_idx i32 (call $chk_sym_find_index %alias_name))
                         (if (ne.i32 %alias_idx -1)
                           (then
-                            ;; Set alias: new var points to the same allocation
                             (let %new_idx i32 (sub.i32 $sym_pos 1))
                             (store.i32 (add.i32 $sym_alias %new_idx) %alias_idx))
                           (else)))
-                      (else)))))))))
+                      (else (if (eq.i32 %init_tag 5)
+                        (then
+                          ;; Pointer from bin-op (e.g., add.i32 %arr 5) → derived alias
+                          (let %ptr_op_idx i32 (call $chk_find_pointer_operand %init))
+                          (if (ne.i32 %ptr_op_idx -1)
+                            (then
+                              (let %new_idx2 i32 (sub.i32 $sym_pos 1))
+                              (store.i32 (add.i32 $sym_alias %new_idx2) %ptr_op_idx))
+                            (else)))
+                        (else)))))))))))
           (else))
         (return %lt))
       (else))
@@ -736,6 +833,18 @@
       (then
         (set $chk_effects (or.i32 $chk_effects 2))
         (call $check_node (load.field %n "left"))
+        ;; Check if field holds a freed pointer
+        (let %lf_obj i32 (load.field %n "left"))
+        (if (ne.i32 %lf_obj -1)
+          (then
+            (let %lf_obj_n (ptr $types.ASTNode) (call $types.ast_at %lf_obj))
+            (if (eq.i32 (load.field %lf_obj_n "tag") 4)
+              (then
+                (if (call $fst_check_freed (load.field %lf_obj_n "str1") (load.field %n "str2"))
+                  (then (call $chk_error2 "use of freed pointer via field" (load.field %n "str2")))
+                  (else)))
+              (else)))
+          (else))
         (return -1))
       (else))
 
@@ -745,6 +854,32 @@
         (set $chk_effects (or.i32 $chk_effects 2))
         (call $check_node (load.field %n "left"))
         (call $check_node (load.field %n "right"))
+        ;; Track: if storing a pointer var-ref into a struct field, record alias
+        (let %sf_obj i32 (load.field %n "left"))
+        (let %sf_val i32 (load.field %n "right"))
+        (if (ne.i32 %sf_obj -1)
+          (then
+            (let %sf_obj_n (ptr $types.ASTNode) (call $types.ast_at %sf_obj))
+            (if (eq.i32 (load.field %sf_obj_n "tag") 4)
+              (then
+                (if (ne.i32 %sf_val -1)
+                  (then
+                    (let %sf_val_n (ptr $types.ASTNode) (call $types.ast_at %sf_val))
+                    (if (eq.i32 (load.field %sf_val_n "tag") 4)
+                      (then
+                        (let %sf_vname (ptr u8) (load.field %sf_val_n "str1"))
+                        (let %sf_vidx i32 (call $chk_sym_find_index %sf_vname))
+                        (if (ne.i32 %sf_vidx -1)
+                          (then
+                            (call $fst_record
+                              (load.field %sf_obj_n "str1")
+                              (load.field %n "str2")
+                              %sf_vidx))
+                          (else)))
+                      (else)))
+                  (else)))
+              (else)))
+          (else))
         (return -1))
       (else))
 
