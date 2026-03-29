@@ -69,6 +69,11 @@ import Base from '../layouts/Base.astro';
                 <td class="py-3">Layer 4: compile, run, and verify code matches intent via Claude API. Dynamic verification via compile-and-run. Merged in PR #16.</td>
               </tr>
               <tr class="border-b border-border/50">
+                <td class="py-3 pr-4">Self-Hosting (ariac)</td>
+                <td class="py-3 pr-4"><span class="text-[#7ee787] font-mono">complete</span></td>
+                <td class="py-3">ariac: ARIA-IR compiler written in ARIA-IR (~3800 LOC). Compiles itself via the bootstrap chain: ariac.aria [Clojure] ariac [ariac] ariac2. Full CLI parity with the Clojure compiler. Shipped in PR #17. <a href="https://github.com/arkaitz-dev" target="_blank" rel="noopener" class="text-accent hover:underline">@arkaitz-dev</a></td>
+              </tr>
+              <tr class="border-b border-border/50">
                 <td class="py-3 pr-4">Standard Library</td>
                 <td class="py-3 pr-4"><span class="text-[#ffa657] font-mono">planned</span></td>
                 <td class="py-3">Built-in primitives beyond arithmetic</td>
