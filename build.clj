@@ -2,7 +2,7 @@
   (:require [clojure.tools.build.api :as b]))
 
 (def lib 'com.github.jhavera/aria-clj)
-(def version "0.1.0")
+(def version "0.2.0")
 (def class-dir "target/classes")
 (def uber-file (format "target/aria-clj-%s.jar" version))
 (def basis (delay (b/create-basis {:project "deps.edn"})))
