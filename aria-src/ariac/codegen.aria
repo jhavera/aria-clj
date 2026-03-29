@@ -16,6 +16,10 @@
   (global mut $cg_loop_pos   i32            0)
   (global mut $cg_has_args   i32            0)
 
+  ;; Pre-allocated buffers for split_qualified_name (avoid per-call alloc/free)
+  (global mut $cg_qbuf_mod  (ptr (ptr u8)) 0)
+  (global mut $cg_qbuf_func (ptr (ptr u8)) 0)
+
   ;; ── Codegen init ───────────────────────────────────────────
 
   (func $init_codegen
@@ -26,7 +30,9 @@
     (set $cg_loop_names (alloc (ptr u8) 1024))
     (set $cg_loop_ids   (alloc i32 1024))
     (set $cg_loop_pos   0)
-    (set $cg_has_args   0))
+    (set $cg_has_args   0)
+    (set $cg_qbuf_mod  (alloc (ptr u8) 1))
+    (set $cg_qbuf_func (alloc (ptr u8) 1)))
 
   ;; ── Codegen helpers ────────────────────────────────────────
 
@@ -863,16 +869,12 @@
     (param $name (ptr u8))
     (effects io mem div)
     (intent "Emit a function call name, resolving qualified names to module__func or bare for externs")
-    ;; Check if qualified ($mod.func)
-    (let %mod_buf (ptr (ptr u8)) (alloc (ptr u8) 1))
-    (let %func_buf (ptr (ptr u8)) (alloc (ptr u8) 1))
-    (let %is_qual i32 (call $types.split_qualified_name $name %mod_buf %func_buf))
+    ;; Check if qualified ($mod.func) using pre-allocated buffers
+    (let %is_qual i32 (call $types.split_qualified_name $name $cg_qbuf_mod $cg_qbuf_func))
     (if (ne.i32 %is_qual 0)
       (then
-        (let %mn (ptr u8) (load.i32 %mod_buf))
-        (let %fn (ptr u8) (load.i32 %func_buf))
-        (free %mod_buf)
-        (free %func_buf)
+        (let %mn (ptr u8) (load.i32 $cg_qbuf_mod))
+        (let %fn (ptr u8) (load.i32 $cg_qbuf_func))
         ;; Check if target is a regular function (tag 28) via resolve
         (let %resolved i32 (call $types.resolve_qualified_fn $name 0))
         (if (ge.i32 %resolved 0)
@@ -885,8 +887,6 @@
             (call $cg_emit_name %fn)))
         (return))
       (else))
-    (free %mod_buf)
-    (free %func_buf)
     ;; Unqualified: prefix with current module if we're in multi-module mode
     ;; BUT only if the name is a regular function (tag 28) in the current module
     ;; Externs (tag 32) should not be prefixed

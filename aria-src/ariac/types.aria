@@ -621,6 +621,11 @@
   (global mut $exp_names    (ptr (ptr u8)) 0)
   (global mut $exp_pos      i32            0)
 
+  ;; Pre-allocated buffers for split_qualified_name (avoid per-call alloc/free)
+  (global mut $qbuf_mod    (ptr (ptr u8)) 0)
+  (global mut $qbuf_func   (ptr (ptr u8)) 0)
+  (global mut $qbuf_sigil  (ptr u8)       0)
+
   ;; Current module being codegen'd (for name prefixing)
   (global mut $cg_current_mod (ptr u8) 0)
 
@@ -635,7 +640,10 @@
     (set $exp_mod_idx (alloc i32 1024))
     (set $exp_names   (alloc (ptr u8) 1024))
     (set $exp_pos     0)
-    (set $cg_current_mod 0))
+    (set $cg_current_mod 0)
+    (set $qbuf_mod   (alloc (ptr u8) 1))
+    (set $qbuf_func  (alloc (ptr u8) 1))
+    (set $qbuf_sigil (alloc u8 256)))
 
   ;; ── Path helpers ───────────────────────────────────────────
 
@@ -813,15 +821,12 @@
     (result i32)
     (effects mem io div)
     (intent "Resolve a qualified function name ($mod.func). Returns AST index or -1.")
-    (let %mod_name (ptr (ptr u8)) (alloc (ptr u8) 1))
-    (let %func_name (ptr (ptr u8)) (alloc (ptr u8) 1))
-    (let %is_qual i32 (call $split_qualified_name $name %mod_name %func_name))
-    (if (eq.i32 %is_qual 0) (then (free %mod_name) (free %func_name) (return -1)) (else))
+    ;; Use pre-allocated buffers (no per-call alloc/free)
+    (let %is_qual i32 (call $split_qualified_name $name $qbuf_mod $qbuf_func))
+    (if (eq.i32 %is_qual 0) (then (return -1)) (else))
 
-    (let %mname (ptr u8) (load.i32 %mod_name))
-    (let %fname (ptr u8) (load.i32 %func_name))
-    (free %mod_name)
-    (free %func_name)
+    (let %mname (ptr u8) (load.i32 $qbuf_mod))
+    (let %fname (ptr u8) (load.i32 $qbuf_func))
 
     ;; Find the target module
     (let %target_mod i32 (call $find_module_by_name %mname))
@@ -829,24 +834,20 @@
       (then (return -1))
       (else))
 
-    ;; Verify exported
-    ;; Build the full export name with sigil: $func_name
-    (let %sigil_len i32 (add.i32 (call $str_len %fname) 2))
-    (let %sigil_name (ptr u8) (alloc u8 %sigil_len))
-    (store.u8 %sigil_name 36)
+    ;; Verify exported: build "$func_name" in pre-allocated sigil buffer
+    (store.u8 $qbuf_sigil 36)
     (local mut $ci i32 0)
     (loop $cp
       (let %ch i32 (load.u8 (add.i32 %fname $ci)))
       (if (eq.i32 %ch 0) (then (br $cp))
         (else
-          (store.u8 (add.i32 %sigil_name (add.i32 $ci 1)) %ch)
+          (store.u8 (add.i32 $qbuf_sigil (add.i32 $ci 1)) %ch)
           (set $ci (add.i32 $ci 1)))))
-    (store.u8 (add.i32 %sigil_name (add.i32 $ci 1)) 0)
+    (store.u8 (add.i32 $qbuf_sigil (add.i32 $ci 1)) 0)
 
-    (if (eq.i32 (call $is_exported %target_mod %sigil_name) 0)
-      (then (free %sigil_name) (return -2))
+    (if (eq.i32 (call $is_exported %target_mod $qbuf_sigil) 0)
+      (then (return -2))
       (else))
-    (free %sigil_name)
 
     ;; Find the function in the target module's AST
     (let %tmod_ast i32 (load.i32 (add.i32 $mod_asts %target_mod)))
