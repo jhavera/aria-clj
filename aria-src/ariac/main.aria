@@ -318,6 +318,52 @@
     (print "%s" $suffix)
     (call $types.stdout_restore))
 
+  ;; ── Module resolver ─────────────────────────────────────────
+
+  (func $resolve_module
+    (param $path (ptr u8))
+    (param $parent_dir (ptr u8))
+    (effects io mem div)
+    (intent "Load and parse a module, recursively resolving its imports")
+    (let %full_path (ptr u8) (call $types.path_join $parent_dir $path))
+    ;; Already loaded?
+    (let %existing i32 (call $types.find_module_by_path %full_path))
+    (if (ne.i32 %existing -1)
+      (then
+        (if (eq.i32 (call $types.get_mod_status %existing) 1)
+          (then
+            (print "ERROR: Circular import detected: %s\n" %full_path)
+            (call $types.trap "Circular import"))
+          (else))
+        (return))
+      (else))
+    ;; Load and parse
+    (let %src (ptr u8) (call $types.file_read_all %full_path))
+    (let %tree i32 (call $reader.read_all %src))
+    (let %mod i32 (call $parser.parse_module (call $types.sexp_child %tree 0)))
+    (let %mod_node (ptr $types.ASTNode) (call $types.ast_at %mod))
+    (let %mod_name (ptr u8) (load.field %mod_node "str1"))
+    ;; Register (status = LOADING = 1)
+    (let %mod_idx i32 (call $types.get_mod_pos))
+    (call $types.register_module %mod_name %full_path %mod)
+    ;; Recursively resolve imports
+    (let %c2 i32 (load.field %mod_node "count2"))
+    (let %arr2 (ptr i32) (load.field %mod_node "children2"))
+    (let %dir (ptr u8) (call $types.dirname %full_path))
+    (local mut $i i32 0)
+    (loop $imports
+      (if (ge.i32 $i %c2) (then (br $imports))
+        (else
+          (let %cidx i32 (load.i32 (add.i32 %arr2 $i)))
+          (let %cn (ptr $types.ASTNode) (call $types.ast_at %cidx))
+          (if (eq.i32 (load.field %cn "tag") 34)
+            (then (call $resolve_module (load.field %cn "str1") %dir))
+            (else))
+          (set $i (add.i32 $i 1)))))
+    ;; Mark as LOADED = 2, collect exports
+    (call $types.set_mod_status %mod_idx 2)
+    (call $types.collect_exports %mod_idx))
+
   ;; ── CLI entry point ────────────────────────────────────────
 
   (func $main
@@ -382,47 +428,80 @@
             (else))
           (set $fi (add.i32 $fi 1)))))
 
-    ;; Init pools
+    ;; Init pools + module registry
     (call $types.init_pool)
     (call $types.init_parser)
+    (call $types.init_modules)
 
-    ;; Read source
-    (let %src (ptr u8) (call $types.file_read_all %path))
-    (if (eq.i32 %src 0)
-      (then (print "ariac: cannot read file: %s\n" %path) (return 1))
-      (else))
+    ;; Resolve entry module + all imports recursively
+    (let %dir (ptr u8) (call $types.dirname %path))
+    (local mut $basename (ptr u8) %path)
+    (local mut $li i32 (sub.i32 (call $types.str_len %path) 1))
+    (loop $find_slash
+      (if (lt.i32 $li 0) (then (br $find_slash))
+        (else
+          (if (eq.i32 (load.u8 (add.i32 %path $li)) 47)
+            (then (set $basename (add.i32 %path (add.i32 $li 1))) (br $find_slash))
+            (else (set $li (sub.i32 $li 1)))))))
+    (call $resolve_module $basename %dir)
 
-    ;; Read s-expressions
-    (let %sexp_root i32 (call $reader.read_all %src))
-
-    ;; Parse module
-    (let %mod_ast i32 (call $parser.parse_module (call $types.sexp_child %sexp_root 0)))
-    (let %mod_node (ptr $types.ASTNode) (call $types.ast_at %mod_ast))
+    ;; Get entry module info
+    (let %entry_ast i32 (call $types.get_mod_asts 0))
+    (let %mod_node (ptr $types.ASTNode) (call $types.ast_at %entry_ast))
     (let %mod_name (ptr u8) (load.field %mod_node "str1"))
 
-    ;; Check
-    (call $checker.init_checker)
-    (let %check_result i32 (call $checker.check_module %mod_ast))
-    (if (ne.i32 %check_result 0)
-      (then (return 1))
-      (else))
+    ;; Check all modules
+    (local mut $ci i32 (sub.i32 (call $types.get_mod_pos) 1))
+    (local mut $check_ok i32 1)
+    (loop $check_all
+      (if (lt.i32 $ci 0) (then (br $check_all))
+        (else
+          (call $checker.init_checker)
+          ;; Register functions from ALL modules for cross-module resolution
+          (local mut $ri i32 0)
+          (loop $reg_all
+            (if (ge.i32 $ri (call $types.get_mod_pos)) (then (br $reg_all))
+              (else
+                (let %rast i32 (call $types.get_mod_asts $ri))
+                (let %rmn (ptr $types.ASTNode) (call $types.ast_at %rast))
+                (let %rtotal i32 (load.field %rmn "count"))
+                (let %rarr (ptr i32) (load.field %rmn "children"))
+                (local mut $rfi i32 0)
+                (loop $reg_funcs
+                  (if (ge.i32 $rfi %rtotal) (then (br $reg_funcs))
+                    (else
+                      (let %rfidx i32 (load.i32 (add.i32 %rarr $rfi)))
+                      (let %rfn (ptr $types.ASTNode) (call $types.ast_at %rfidx))
+                      (if (eq.i32 (load.field %rfn "tag") 28)
+                        (then (call $checker.chk_fn_register (load.field %rfn "str1") %rfidx))
+                        (else))
+                      (set $rfi (add.i32 $rfi 1)))))
+                (set $ri (add.i32 $ri 1)))))
+          (let %result i32 (call $checker.check_module (call $types.get_mod_asts $ci)))
+          (if (ne.i32 %result 0) (then (set $check_ok 0)) (else))
+          (set $ci (sub.i32 $ci 1)))))
+    (if (eq.i32 $check_ok 0) (then (return 1)) (else))
 
     ;; --check
     (if $check_only (then (return 0)) (else))
 
     ;; --emit-ast
     (if $emit_ast
-      (then (call $print_ast %mod_ast) (print "\n") (return 0))
+      (then (call $print_ast %entry_ast) (print "\n") (return 0))
       (else))
 
     ;; Codegen
     (call $codegen.init_codegen)
+    (local mut $has_imports i32 0)
+    (if (gt.i32 (call $types.get_mod_pos) 1) (then (set $has_imports 1)) (else))
 
     (call $types.stdout_to_file "/tmp/ariac_out.c")
-    (call $codegen.cg_emit_module %mod_ast)
+    (if $has_imports
+      (then (call $codegen.cg_emit_all_modules))
+      (else (call $codegen.cg_emit_module %entry_ast)))
     (call $types.stdout_restore)
 
-    ;; --emit-c: dump C to stdout and exit
+    ;; --emit-c
     (if $emit_c
       (then (call $types.system "cat /tmp/ariac_out.c") (return 0))
       (else))
@@ -439,7 +518,7 @@
       (then (print "ariac: gcc failed\n") (return 1))
       (else))
 
-    ;; --run: also execute the binary
+    ;; --run
     (if $run_flag
       (then
         (call $cg_write_cmd "./" $bin_name "\n" $bin_raw)

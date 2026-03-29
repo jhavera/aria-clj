@@ -552,6 +552,280 @@
     (intent "Get current field pool position")
     (return $field_pos))
 
+  (func $get_mod_pos (result i32) (effects mem) (return $mod_pos))
+  (func $get_mod_asts (param $i i32) (result i32) (effects mem) (return (load.i32 (add.i32 $mod_asts $i))))
+  (func $get_mod_status (param $i i32) (result i32) (effects mem) (return (load.i32 (add.i32 $mod_status $i))))
+  (func $set_mod_status (param $i i32) (param $v i32) (effects mem) (store.i32 (add.i32 $mod_status $i) $v))
+  (func $get_cg_current_mod (result (ptr u8)) (effects mem) (return $cg_current_mod))
+  (func $set_cg_current_mod (param $v (ptr u8)) (effects mem) (set $cg_current_mod $v))
+
+  ;; ═══════════════════════════════════════════════════════════
+  ;; Module registry
+  ;; ═══════════════════════════════════════════════════════════
+
+  ;; ── Module registry globals ────────────────────────────────
+
+  (global mut $mod_names   (ptr (ptr u8)) 0)
+  (global mut $mod_paths   (ptr (ptr u8)) 0)
+  (global mut $mod_asts    (ptr i32)      0)
+  (global mut $mod_status  (ptr i32)      0)
+  (global mut $mod_pos     i32            0)
+
+  ;; Export tracking: flat array of (mod_idx, name) pairs
+  (global mut $exp_mod_idx  (ptr i32)      0)
+  (global mut $exp_names    (ptr (ptr u8)) 0)
+  (global mut $exp_pos      i32            0)
+
+  ;; Current module being codegen'd (for name prefixing)
+  (global mut $cg_current_mod (ptr u8) 0)
+
+  (func $init_modules
+    (effects mem)
+    (intent "Allocate module registry arrays")
+    (set $mod_names  (alloc (ptr u8) 64))
+    (set $mod_paths  (alloc (ptr u8) 64))
+    (set $mod_asts   (alloc i32 64))
+    (set $mod_status (alloc i32 64))
+    (set $mod_pos    0)
+    (set $exp_mod_idx (alloc i32 1024))
+    (set $exp_names   (alloc (ptr u8) 1024))
+    (set $exp_pos     0)
+    (set $cg_current_mod 0))
+
+  ;; ── Path helpers ───────────────────────────────────────────
+
+  (func $dirname
+    (param $path (ptr u8))
+    (result (ptr u8))
+    (effects mem io div)
+    (intent "Extract directory part of a path (everything up to last /)")
+    (let %len i32 (call $str_len $path))
+    (local mut $i i32 (sub.i32 %len 1))
+    (loop $scan
+      (if (lt.i32 $i 0) (then (br $scan))
+        (else
+          (if (eq.i32 (load.u8 (add.i32 $path $i)) 47)
+            (then (br $scan))
+            (else (set $i (sub.i32 $i 1)))))))
+    (if (lt.i32 $i 0)
+      (then (return "."))
+      (else))
+    (return (call $str_copy_range $path 0 $i)))
+
+  (func $path_join
+    (param $dir (ptr u8))
+    (param $file (ptr u8))
+    (result (ptr u8))
+    (effects mem io div)
+    (intent "Join directory and file: dir/file")
+    (let %dlen i32 (call $str_len $dir))
+    (let %flen i32 (call $str_len $file))
+    (let %buf (ptr u8) (alloc u8 (add.i32 (add.i32 %dlen %flen) 2)))
+    ;; Copy dir
+    (local mut $i i32 0)
+    (loop $cd
+      (if (ge.i32 $i %dlen) (then (br $cd))
+        (else
+          (store.u8 (add.i32 %buf $i) (load.u8 (add.i32 $dir $i)))
+          (set $i (add.i32 $i 1)))))
+    ;; Add /
+    (store.u8 (add.i32 %buf %dlen) 47)
+    ;; Copy file
+    (set $i 0)
+    (loop $cf
+      (if (ge.i32 $i %flen) (then (br $cf))
+        (else
+          (store.u8 (add.i32 %buf (add.i32 (add.i32 %dlen 1) $i)) (load.u8 (add.i32 $file $i)))
+          (set $i (add.i32 $i 1)))))
+    ;; Null terminate
+    (store.u8 (add.i32 %buf (add.i32 (add.i32 %dlen 1) %flen)) 0)
+    (return %buf))
+
+  ;; ── Module registry operations ─────────────────────────────
+
+  (func $find_module_by_path
+    (param $path (ptr u8))
+    (result i32)
+    (effects mem io div)
+    (intent "Find module index by path, return -1 if not found")
+    (local mut $i i32 0)
+    (loop $scan
+      (if (ge.i32 $i $mod_pos) (then (br $scan))
+        (else
+          (if (call $str_eq (load.i32 (add.i32 $mod_paths $i)) $path)
+            (then (return $i))
+            (else (set $i (add.i32 $i 1)))))))
+    (return -1))
+
+  (func $find_module_by_name
+    (param $name (ptr u8))
+    (result i32)
+    (effects mem io div)
+    (intent "Find module index by module name, return -1 if not found")
+    (local mut $i i32 0)
+    (loop $scan
+      (if (ge.i32 $i $mod_pos) (then (br $scan))
+        (else
+          (if (call $str_eq (load.i32 (add.i32 $mod_names $i)) $name)
+            (then (return $i))
+            (else (set $i (add.i32 $i 1)))))))
+    (return -1))
+
+  (func $register_module
+    (param $name (ptr u8))
+    (param $path (ptr u8))
+    (param $ast_idx i32)
+    (effects mem io)
+    (intent "Register a module in the registry")
+    (if (ge.i32 $mod_pos 64)
+      (then (call $trap "Module registry full"))
+      (else))
+    (store.i32 (add.i32 $mod_names $mod_pos) $name)
+    (store.i32 (add.i32 $mod_paths $mod_pos) $path)
+    (store.i32 (add.i32 $mod_asts $mod_pos) $ast_idx)
+    (store.i32 (add.i32 $mod_status $mod_pos) 1)
+    (set $mod_pos (add.i32 $mod_pos 1)))
+
+  (func $collect_exports
+    (param $mod_idx i32)
+    (effects mem io div)
+    (intent "Collect export declarations from a module into the export table")
+    (let %ast_idx i32 (load.i32 (add.i32 $mod_asts $mod_idx)))
+    (let %mn (ptr $ASTNode) (call $ast_at %ast_idx))
+    (let %c2 i32 (load.field %mn "count2"))
+    (let %arr2 (ptr i32) (load.field %mn "children2"))
+    (local mut $i i32 0)
+    (loop $exps
+      (if (ge.i32 $i %c2) (then (br $exps))
+        (else
+          (let %eidx i32 (load.i32 (add.i32 %arr2 $i)))
+          (let %en (ptr $ASTNode) (call $ast_at %eidx))
+          (if (eq.i32 (load.field %en "tag") 31)
+            (then
+              (if (ge.i32 $exp_pos 1024)
+                (then (call $trap "Export table full"))
+                (else))
+              (store.i32 (add.i32 $exp_mod_idx $exp_pos) $mod_idx)
+              (store.i32 (add.i32 $exp_names $exp_pos) (load.field %en "str1"))
+              (set $exp_pos (add.i32 $exp_pos 1)))
+            (else))
+          (set $i (add.i32 $i 1))))))
+
+  (func $is_exported
+    (param $mod_idx i32)
+    (param $name (ptr u8))
+    (result i32)
+    (effects mem io div)
+    (intent "Check if a name is exported by the given module")
+    (local mut $i i32 0)
+    (loop $scan
+      (if (ge.i32 $i $exp_pos) (then (br $scan))
+        (else
+          (if (eq.i32 (load.i32 (add.i32 $exp_mod_idx $i)) $mod_idx)
+            (then
+              (if (call $str_eq (load.i32 (add.i32 $exp_names $i)) $name)
+                (then (return 1))
+                (else)))
+            (else))
+          (set $i (add.i32 $i 1)))))
+    (return 0))
+
+  ;; ── Cross-module name resolution ───────────────────────────
+
+  (func $split_qualified_name
+    (param $name (ptr u8))
+    (param $out_mod (ptr (ptr u8)))
+    (param $out_func (ptr (ptr u8)))
+    (result i32)
+    (effects mem io div)
+    (intent "Split $mod.func into mod and func parts. Returns 1 if dotted, 0 if not.")
+    ;; Skip sigil ($)
+    (local mut $start i32 0)
+    (let %c0 i32 (load.u8 $name))
+    (if (eq.i32 %c0 36) (then (set $start 1)) (else))
+    (if (eq.i32 %c0 37) (then (set $start 1)) (else))
+    ;; Find dot
+    (local mut $i i32 $start)
+    (loop $scan
+      (let %c i32 (load.u8 (add.i32 $name $i)))
+      (if (eq.i32 %c 0) (then (br $scan))
+        (else (if (eq.i32 %c 46)
+          (then (br $scan))
+          (else (set $i (add.i32 $i 1)))))))
+    (if (eq.i32 (load.u8 (add.i32 $name $i)) 0)
+      (then (return 0))
+      (else))
+    ;; Split: $start..$i is mod name, $i+1..end is func name
+    (store.i32 $out_mod (call $str_copy_range $name $start $i))
+    (let %rest_start i32 (add.i32 $i 1))
+    (let %len i32 (call $str_len $name))
+    (store.i32 $out_func (call $str_copy_range $name %rest_start %len))
+    (return 1))
+
+  (func $resolve_qualified_fn
+    (param $name (ptr u8))
+    (param $current_mod_idx i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Resolve a qualified function name ($mod.func). Returns AST index or -1.")
+    (let %mod_name (ptr (ptr u8)) (alloc (ptr u8) 1))
+    (let %func_name (ptr (ptr u8)) (alloc (ptr u8) 1))
+    (let %is_qual i32 (call $split_qualified_name $name %mod_name %func_name))
+    (if (eq.i32 %is_qual 0) (then (free %mod_name) (free %func_name) (return -1)) (else))
+
+    (let %mname (ptr u8) (load.i32 %mod_name))
+    (let %fname (ptr u8) (load.i32 %func_name))
+    (free %mod_name)
+    (free %func_name)
+
+    ;; Find the target module
+    (let %target_mod i32 (call $find_module_by_name %mname))
+    (if (eq.i32 %target_mod -1)
+      (then (return -1))
+      (else))
+
+    ;; Verify exported
+    ;; Build the full export name with sigil: $func_name
+    (let %sigil_len i32 (add.i32 (call $str_len %fname) 2))
+    (let %sigil_name (ptr u8) (alloc u8 %sigil_len))
+    (store.u8 %sigil_name 36)
+    (local mut $ci i32 0)
+    (loop $cp
+      (let %ch i32 (load.u8 (add.i32 %fname $ci)))
+      (if (eq.i32 %ch 0) (then (br $cp))
+        (else
+          (store.u8 (add.i32 %sigil_name (add.i32 $ci 1)) %ch)
+          (set $ci (add.i32 $ci 1)))))
+    (store.u8 (add.i32 %sigil_name (add.i32 $ci 1)) 0)
+
+    (if (eq.i32 (call $is_exported %target_mod %sigil_name) 0)
+      (then (free %sigil_name) (return -2))
+      (else))
+    (free %sigil_name)
+
+    ;; Find the function in the target module's AST
+    (let %tmod_ast i32 (load.i32 (add.i32 $mod_asts %target_mod)))
+    (let %tmn (ptr $ASTNode) (call $ast_at %tmod_ast))
+    (let %tc i32 (load.field %tmn "count"))
+    (let %tarr (ptr i32) (load.field %tmn "children"))
+    (local mut $fi i32 0)
+    (loop $find
+      (if (ge.i32 $fi %tc) (then (br $find))
+        (else
+          (let %fidx i32 (load.i32 (add.i32 %tarr $fi)))
+          (let %fn (ptr $ASTNode) (call $ast_at %fidx))
+          (if (eq.i32 (load.field %fn "tag") 28)
+            (then
+              ;; Compare function name (strip $ from both)
+              (let %fn_name (ptr u8) (load.field %fn "str1"))
+              (let %fn_bare (ptr u8) (add.i32 %fn_name 1))
+              (if (call $str_eq %fn_bare %fname)
+                (then (return %fidx))
+                (else)))
+            (else))
+          (set $fi (add.i32 $fi 1)))))
+    (return -1))
+
   ;; ── Exports ────────────────────────────────────────────────
 
   (export $trap)
@@ -606,5 +880,28 @@
   (export $type_pos)
   (export $field_pool)
   (export $field_pos)
+  (export $init_modules)
+  (export $dirname)
+  (export $path_join)
+  (export $find_module_by_path)
+  (export $find_module_by_name)
+  (export $register_module)
+  (export $collect_exports)
+  (export $is_exported)
+  (export $split_qualified_name)
+  (export $resolve_qualified_fn)
+  (export $mod_names)
+  (export $mod_paths)
+  (export $mod_asts)
+  (export $mod_status)
+  (export $mod_pos)
+  (export $exp_pos)
+  (export $cg_current_mod)
+  (export $get_mod_pos)
+  (export $get_mod_asts)
+  (export $get_mod_status)
+  (export $set_mod_status)
+  (export $get_cg_current_mod)
+  (export $set_cg_current_mod)
 
 ) ;; end module "types"
