@@ -30,8 +30,13 @@ jobs:
       - name: Build uberjar
         run: clojure -T:build uber
 
+      - name: Copy JAR with stable filename
+        run: cp target/aria-clj-*.jar target/aria-clj.jar
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: ${{ github.ref_name }}
-          files: target/aria-clj-*.jar
+          files: |
+            target/aria-clj-*.jar
+            target/aria-clj.jar

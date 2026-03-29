@@ -6,7 +6,7 @@ import Base from '../layouts/Base.astro';
     <div class="max-w-3xl mx-auto">
       <h1 class="font-mono text-3xl md:text-4xl font-bold mb-4">Documentation</h1>
       <p class="text-muted mb-2">ARIA-IR Language Reference</p>
-      <p class="text-xs text-muted mb-12 font-mono">v0.1.0</p>
+      <p class="text-xs text-muted mb-12 font-mono">v0.2.0</p>
 
       <!-- Module -->
       <section class="mb-12">
@@ -274,16 +274,20 @@ int32_t add(int32_t x, int32_t y) {
             <span class="text-muted ml-2">Arithmetic operations. Demonstrates type-suffixed ops, pure functions.</span>
           </div>
           <div class="bg-surface border border-border rounded-lg p-4">
+            <code class="text-accent">float_demo.aria</code>
+            <span class="text-muted ml-2">Float arithmetic, temperature conversion, int-to-float cast.</span>
+          </div>
+          <div class="bg-surface border border-border rounded-lg p-4">
+            <code class="text-accent">bootstrap_demo.aria</code>
+            <span class="text-muted ml-2">Strings as (ptr u8), externs, file I/O, CLI args. Used to verify the self-hosted compiler.</span>
+          </div>
+          <div class="bg-surface border border-border rounded-lg p-4">
             <code class="text-accent">comptime_demo.aria</code>
             <span class="text-muted ml-2">Compile-time code generation. Demonstrates the two-pass comptime model.</span>
           </div>
           <div class="bg-surface border border-border rounded-lg p-4">
             <code class="text-accent">comptime_generics.aria</code>
             <span class="text-muted ml-2">Generics via comptime. Type-parameterized function generation.</span>
-          </div>
-          <div class="bg-surface border border-border rounded-lg p-4">
-            <code class="text-accent">fibonacci-wasi.aria</code>
-            <span class="text-muted ml-2">WASM target. Fibonacci compiled to WAT and run on WASI.</span>
           </div>
         </div>
       </section>

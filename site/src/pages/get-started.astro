@@ -61,6 +61,9 @@ clj -M:run examples/fibonacci.aria --emit-c
 
 <span class="text-muted"># Full pipeline: parse, check, compile, execute</span>
 clj -M:run examples/fibonacci.aria --run</code></pre>
+          <pre><code><span class="text-muted"># Verify intent annotations against observed behavior</span>
+clj -M:run examples/fibonacci.aria --verify</code></pre>
+          <p class="text-muted text-sm">Requires ANTHROPIC_API_KEY. Compiles each function with test inputs, runs it, and asks the Claude API whether the output matches the declared intent.</p>
         </div>
 
         <!-- Uberjar tab (default) -->
@@ -126,6 +129,22 @@ Hello, world!</code></pre>
         <p class="text-muted my-4">Or, if you have the downloaded JAR and only need Java:</p>
         <pre><code>$ java -jar aria-clj.jar hello.aria --run
 Hello, world!</code></pre>
+      </section>
+
+      <!-- ariac: Self-Hosted Compiler -->
+      <section class="mb-12">
+        <h2 class="font-mono text-xl font-bold mb-4">ariac: Self-Hosted Compiler</h2>
+        <p class="text-muted mb-4">ariac is the ARIA compiler written in ARIA-IR itself (~3800 LOC). Build it once with the Clojure compiler, then use it to compile any ARIA program without the Clojure CLI.</p>
+        <pre><code><span class="text-muted"># Build ariac from source</span>
+clojure -M:run aria-src/ariac.aria --emit-c -o /tmp/ariac.c
+gcc -std=c99 -fwrapv -o ariac /tmp/ariac.c -lm
+
+<span class="text-muted"># Use ariac to compile any ARIA program</span>
+./ariac examples/fibonacci.aria --run
+
+<span class="text-muted"># Verify the bootstrap: ariac compiles itself</span>
+./ariac aria-src/ariac.aria -o ariac2
+./ariac2 examples/fibonacci.aria --run</code></pre>
       </section>
 
       <!-- Troubleshooting -->
