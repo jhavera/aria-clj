@@ -1,10 +1,19 @@
 # aria-clj
 
-Clojure implementation of the ARIA compiler toolchain.
+ARIA compiler toolchain.
 
 **ARIA** (AI Representation for Instruction Architecture) is an s-expression intermediate representation designed for AI authorship. It compiles to C99, producing portable native binaries.
 
-This is the production rewrite of the [Python prototype](https://github.com/jhavera/aria). Because ARIA-IR is s-expressions and Clojure is s-expressions, the parser collapses to `clojure.edn/read` plus validation, and immutable data structures naturally mirror SSA semantics.
+The reference ARIA-IR compiler is **ariac** — a self-hosted compiler written in ARIA-IR itself. It compiles to native binaries via C99 and can compile itself. The Clojure implementation (`src/aria/`) serves as the initial bootstrap only.
+
+ariac provides capabilities beyond the Clojure bootstrap:
+
+- **Multi-module programs** with `(import "path.aria")` and qualified access (`$module.func`)
+- **Compile-time memory safety**: use-after-free, double-free, null deref, leak detection, pointer arithmetic aliases, and struct field dangling pointer tracking (8 detection types)
+- **Mandatory intent annotations** enforced by the checker
+- **Error positions** with line and column numbers
+
+The only known gap in memory safety is **cross-function free**: if a callee internally frees a pointer argument, the caller cannot detect this without ownership annotations on parameters, which would compromise ARIA's simplicity.
 
 ## Prerequisites
 
