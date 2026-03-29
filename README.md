@@ -150,6 +150,7 @@ ariac <file.aria> --emit-c     # Emit C to stdout
 ariac <file.aria> --check      # Type-check only
 ariac <file.aria> --emit-ast   # Print AST
 ariac <file.aria> -o <name>    # Compile with custom output name
+ariac <file.aria> --quiet      # Suppress status messages
 ariac --help                   # Show usage
 ```
 
