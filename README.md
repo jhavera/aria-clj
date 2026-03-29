@@ -120,14 +120,25 @@ Functions and blocks carry human-readable `intent` annotations describing their 
 
 ## ariac — Self-hosted compiler
 
-`ariac` is the ARIA compiler written in ARIA-IR itself (~3800 LOC). It compiles ARIA source to native binaries via C99 and can compile itself (bootstrap).
+`ariac` is the ARIA compiler written in ARIA-IR itself, split into 6 modules (~4800 LOC total). It compiles ARIA source to native binaries via C99, supports multi-module programs via `(import ...)`, and can compile itself.
 
 ### Building ariac
 
+Building ariac is a two-stage process:
+
 ```bash
-# Build ariac from source using the Clojure compiler
-clojure -M:run aria-src/ariac.aria --backend c -o /tmp/ariac.c
-gcc -std=c99 -fwrapv -o ariac /tmp/ariac.c -lm
+# Stage 0: Build ariac-bootstrap (single-file compiler with minimal import support)
+clojure -M:run aria-src/ariac-bootstrap.aria --backend c -o /tmp/ariac_bs.c
+gcc -std=c99 -fwrapv -o ariac-bootstrap /tmp/ariac_bs.c -lm
+
+# Stage 1: Build ariac from its split modules using the bootstrap
+./ariac-bootstrap aria-src/ariac/main.aria -o ariac
+```
+
+`ariac-bootstrap` is a frozen stage0 compiler — it only needs to be built once. After that, `ariac` can rebuild itself:
+
+```bash
+./ariac aria-src/ariac/main.aria -o ariac
 ```
 
 ### Using ariac
@@ -142,6 +153,31 @@ ariac <file.aria> -o <name>    # Compile with custom output name
 ariac --help                   # Show usage
 ```
 
+### Multi-module programs
+
+ariac supports importing functions from other ARIA modules:
+
+```lisp
+; math.aria
+(module "math"
+  (func $gcd (param $a i32) (param $b i32) (result i32) (effects pure)
+    (if (eq.i32 $b 0) (then (return $a))
+      (else (return (call $gcd $b (rem.i32 $a $b))))))
+  (export $gcd))
+
+; main.aria
+(module "main"
+  (import "math.aria")
+  (func $main (result i32) (effects io)
+    (print "GCD = %d\n" (call $math.gcd 48 18))
+    (return 0))
+  (export $main))
+```
+
+```bash
+ariac main.aria --run   # Automatically resolves and compiles math.aria
+```
+
 ### Running examples with ariac
 
 ```bash
@@ -150,16 +186,7 @@ ariac examples/bubble_sort.aria --run
 ariac examples/math_demo.aria --run
 ariac examples/float_demo.aria --run
 ariac examples/bootstrap_demo.aria --run
-```
-
-### Bootstrap verification
-
-```bash
-# ariac compiles itself
-ariac aria-src/ariac.aria -o ariac2
-
-# The self-compiled compiler works
-./ariac2 examples/fibonacci.aria --run
+ariac examples/import_demo/main.aria --run    # Multi-module example
 ```
 
 ## Examples
@@ -230,7 +257,20 @@ prompt → Claude API → Reader → Parser → Checker → (retry) → Codegen 
 
 The compiler CLI (`src/aria/main.clj`) orchestrates the pipeline and optionally invokes gcc to produce a native binary. The generator CLI (`src/aria/gen.clj`) adds an AI front-end that produces validated ARIA-IR from prompts.
 
-The self-hosted compiler (`aria-src/ariac.aria`) implements the same pipeline in ARIA-IR itself, bootstrapping through the Clojure compiler to produce a native `ariac` binary.
+### Self-hosted compiler (ariac)
+
+The self-hosted compiler implements the same pipeline in ARIA-IR itself, split into 6 modules:
+
+| Module | File | Role |
+|--------|------|------|
+| **Types** | `aria-src/ariac/types.aria` | Struct types, pools, accessors, module registry |
+| **Reader** | `aria-src/ariac/reader.aria` | S-expression parser |
+| **Parser** | `aria-src/ariac/parser.aria` | AST construction from SExp tree |
+| **Checker** | `aria-src/ariac/checker.aria` | Scoping, mutability, effect verification |
+| **Codegen** | `aria-src/ariac/codegen.aria` | C99 emission (single + multi-module) |
+| **Main** | `aria-src/ariac/main.aria` | CLI, module resolver, pipeline orchestration |
+
+The bootstrap compiler (`aria-src/ariac-bootstrap.aria`) is a frozen single-file version (~4500 LOC) that bridges the Clojure compiler to the split ariac. It only needs to be built once.
 
 ## License
 
