@@ -152,6 +152,16 @@
     (set $sym_pos (add.i32 $sym_pos 1)))
 
   ;; ── Pointer state tracking ─────────────────────────────────
+  ;; States: 0=alive, 1=freed, 2=null/uninitialized, 3=owns-allocation
+
+  (func $is_pointer_type
+    (param $type_idx i32)
+    (result i32)
+    (effects mem)
+    (intent "Check if a type is a pointer type (TypeInfo kind=1)")
+    (if (eq.i32 $type_idx -1) (then (return 0)) (else))
+    (let %t (ptr $types.TypeInfo) (call $types.type_at $type_idx))
+    (return (eq.i32 (load.field %t "kind") 1)))
 
   (func $chk_sym_is_freed
     (param $name (ptr u8))
@@ -177,6 +187,19 @@
         (else
           (if (call $types.str_eq (load.i32 (add.i32 $sym_names $i)) $name)
             (then (store.i32 (add.i32 $sym_states $i) 1) (return))
+            (else (set $i (sub.i32 $i 1))))))))
+
+  (func $chk_sym_mark_state
+    (param $name (ptr u8))
+    (param $state i32)
+    (effects mem io div)
+    (intent "Set a variable's pointer state to the given value")
+    (local mut $i i32 (sub.i32 $sym_pos 1))
+    (loop $scan
+      (if (lt.i32 $i 0) (then (br $scan))
+        (else
+          (if (call $types.str_eq (load.i32 (add.i32 $sym_names $i)) $name)
+            (then (store.i32 (add.i32 $sym_states $i) $state) (return))
             (else (set $i (sub.i32 $i 1))))))))
 
   (func $chk_sym_reset_state
@@ -402,9 +425,12 @@
         (if (eq.i32 %vtype -1)
           (then (call $chk_error2 "Undefined variable" %vname))
           (else
-            (if (call $chk_sym_is_freed %vname)
+            (let %vstate i32 (call $chk_sym_is_freed %vname))
+            (if (eq.i32 %vstate 1)
               (then (call $chk_error2 "use of freed pointer" %vname))
-              (else))))
+              (else (if (eq.i32 %vstate 2)
+                (then (call $chk_error2 "use of null/uninitialized pointer" %vname))
+                (else))))))
         (return %vtype))
       (else))
 
@@ -441,6 +467,28 @@
         (let %lt i32 (load.field %n "type1"))
         (let %lmut i32 (load.field %n "bool1"))
         (call $chk_sym_define (load.field %n "str1") %lt %lmut)
+        ;; Pointer state tracking for the new variable
+        (if (call $is_pointer_type %lt)
+          (then
+            (if (eq.i32 %init -1)
+              (then
+                ;; Pointer with no initializer → null
+                (call $chk_sym_mark_state (load.field %n "str1") 2))
+              (else
+                (let %init_node (ptr $types.ASTNode) (call $types.ast_at %init))
+                (let %init_tag i32 (load.field %init_node "tag"))
+                (if (eq.i32 %init_tag 0)
+                  (then
+                    ;; Pointer initialized to literal 0 → null
+                    (if (eq.i32 (load.field %init_node "int1") 0)
+                      (then (call $chk_sym_mark_state (load.field %n "str1") 2))
+                      (else)))
+                  (else (if (eq.i32 %init_tag 17)
+                    (then
+                      ;; Pointer initialized from alloc → owns allocation
+                      (call $chk_sym_mark_state (load.field %n "str1") 3))
+                    (else)))))))
+          (else))
         (return %lt))
       (else))
 
@@ -479,7 +527,7 @@
                 ;; Extern: assume io+mem
                 (set $chk_effects (or.i32 $chk_effects 6)))))
           (else))
-        ;; Check arguments
+        ;; Check arguments and transfer ownership for pointer args
         (let %argc i32 (load.field %n "count"))
         (let %argv (ptr i32) (load.field %n "children"))
         (local mut $ai i32 0)
@@ -487,7 +535,17 @@
           (if (ge.i32 $ai %argc)
             (then (br $args))
             (else
-              (call $check_node (load.i32 (add.i32 %argv $ai)))
+              (let %arg_idx i32 (load.i32 (add.i32 %argv $ai)))
+              (call $check_node %arg_idx)
+              ;; If arg is a var-ref with state=3 (owns-alloc), transfer ownership
+              (let %arg_node (ptr $types.ASTNode) (call $types.ast_at %arg_idx))
+              (if (eq.i32 (load.field %arg_node "tag") 4)
+                (then
+                  (let %aname (ptr u8) (load.field %arg_node "str1"))
+                  (if (eq.i32 (call $chk_sym_is_freed %aname) 3)
+                    (then (call $chk_sym_reset_state %aname))
+                    (else)))
+                (else))
               (set $ai (add.i32 $ai 1)))))
         ;; Return callee's result type
         (if (ne.i32 %callee_idx -1)
@@ -501,7 +559,19 @@
     (if (eq.i32 %tag 11)
       (then
         (let %rv i32 (load.field %n "left"))
-        (if (ne.i32 %rv -1) (then (call $check_node %rv)) (else))
+        (if (ne.i32 %rv -1)
+          (then
+            (call $check_node %rv)
+            ;; Transfer ownership if returning a var with state=3
+            (let %rv_node (ptr $types.ASTNode) (call $types.ast_at %rv))
+            (if (eq.i32 (load.field %rv_node "tag") 4)
+              (then
+                (let %rname (ptr u8) (load.field %rv_node "str1"))
+                (if (eq.i32 (call $chk_sym_is_freed %rname) 3)
+                  (then (call $chk_sym_reset_state %rname))
+                  (else)))
+              (else)))
+          (else))
         (return $ty_void))
       (else))
 
@@ -573,7 +643,16 @@
             (if (eq.i32 (load.field %ft "tag") 4)
               (then
                 (let %fname (ptr u8) (load.field %ft "str1"))
-                (if (call $chk_sym_is_freed %fname)
+                ;; Check free of non-pointer
+                (let %ftype i32 (call $chk_sym_lookup %fname))
+                (if (ne.i32 %ftype -1)
+                  (then
+                    (if (eq.i32 (call $is_pointer_type %ftype) 0)
+                      (then (call $chk_error2 "free of non-pointer variable" %fname))
+                      (else)))
+                  (else))
+                ;; Check double free (only if state is exactly 1=freed)
+                (if (eq.i32 (call $chk_sym_is_freed %fname) 1)
                   (then (call $chk_error2 "double free of" %fname))
                   (else))
                 (call $chk_sym_mark_freed %fname))
@@ -734,6 +813,18 @@
     ;; Pointer arithmetic: skip past params in children array
     (let %body_arr (ptr i32) (add.i32 %arr %param_count))
     (call $check_body %body_arr %body_count)
+    ;; Check for leaked allocations before leaving scope
+    (local mut $leak_i i32 (sub.i32 $sym_pos 1))
+    (loop $leak_scan
+      (if (lt.i32 $leak_i 0) (then (br $leak_scan))
+        (else
+          (if (ne.i32 (load.i32 (add.i32 $sym_scopes $leak_i)) $sym_scope)
+            (then (br $leak_scan))
+            (else
+              (if (eq.i32 (load.i32 (add.i32 $sym_states $leak_i)) 3)
+                (then (call $chk_warn2 "potential memory leak" (load.i32 (add.i32 $sym_names $leak_i))))
+                (else))
+              (set $leak_i (sub.i32 $leak_i 1)))))))
     ;; Leave function scope
     (call $chk_scope_leave)
     ;; Verify effects
