@@ -13,6 +13,7 @@
   (global mut $sym_types   (ptr i32)      0)
   (global mut $sym_muts    (ptr i32)      0)
   (global mut $sym_scopes  (ptr i32)      0)
+  (global mut $sym_states  (ptr i32)      0)
   (global mut $sym_pos     i32            0)
   (global mut $sym_scope   i32            0)
 
@@ -56,6 +57,7 @@
     (set $sym_types  (alloc i32 1024))
     (set $sym_muts   (alloc i32 1024))
     (set $sym_scopes (alloc i32 1024))
+    (set $sym_states (alloc i32 1024))
     (set $sym_pos    0)
     (set $sym_scope  0)
     ;; Function registry (256 entries)
@@ -146,7 +148,66 @@
     (store.i32 (add.i32 $sym_types $sym_pos) $type_idx)
     (store.i32 (add.i32 $sym_muts $sym_pos) $is_mut)
     (store.i32 (add.i32 $sym_scopes $sym_pos) $sym_scope)
+    (store.i32 (add.i32 $sym_states $sym_pos) 0)
     (set $sym_pos (add.i32 $sym_pos 1)))
+
+  ;; ── Pointer state tracking ─────────────────────────────────
+
+  (func $chk_sym_is_freed
+    (param $name (ptr u8))
+    (result i32)
+    (effects mem io div)
+    (intent "Check if a variable has been marked as freed")
+    (local mut $i i32 (sub.i32 $sym_pos 1))
+    (loop $scan
+      (if (lt.i32 $i 0) (then (br $scan))
+        (else
+          (if (call $types.str_eq (load.i32 (add.i32 $sym_names $i)) $name)
+            (then (return (load.i32 (add.i32 $sym_states $i))))
+            (else (set $i (sub.i32 $i 1)))))))
+    (return 0))
+
+  (func $chk_sym_mark_freed
+    (param $name (ptr u8))
+    (effects mem io div)
+    (intent "Mark a variable as freed in the symbol table")
+    (local mut $i i32 (sub.i32 $sym_pos 1))
+    (loop $scan
+      (if (lt.i32 $i 0) (then (br $scan))
+        (else
+          (if (call $types.str_eq (load.i32 (add.i32 $sym_names $i)) $name)
+            (then (store.i32 (add.i32 $sym_states $i) 1) (return))
+            (else (set $i (sub.i32 $i 1))))))))
+
+  (func $chk_sym_reset_state
+    (param $name (ptr u8))
+    (effects mem io div)
+    (intent "Reset a variable state to alive after reassignment")
+    (local mut $i i32 (sub.i32 $sym_pos 1))
+    (loop $scan
+      (if (lt.i32 $i 0) (then (br $scan))
+        (else
+          (if (call $types.str_eq (load.i32 (add.i32 $sym_names $i)) $name)
+            (then (store.i32 (add.i32 $sym_states $i) 0) (return))
+            (else (set $i (sub.i32 $i 1))))))))
+
+  (func $chk_propagate_frees
+    (effects mem io div)
+    (intent "Propagate freed states from current scope to parent scope")
+    (local mut $i i32 (sub.i32 $sym_pos 1))
+    (loop $scan
+      (if (lt.i32 $i 0) (then (br $scan))
+        (else
+          (if (ne.i32 (load.i32 (add.i32 $sym_scopes $i)) $sym_scope)
+            (then (br $scan))
+            (else
+              ;; If this entry is freed, propagate to parent
+              (if (eq.i32 (load.i32 (add.i32 $sym_states $i)) 1)
+                (then (call $chk_sym_mark_freed (load.i32 (add.i32 $sym_names $i))))
+                (else))
+              (set $i (sub.i32 $i 1))))))))
+
+  ;; ── Symbol lookup ──────────────────────────────────────────
 
   (func $chk_sym_lookup
     (param $name (ptr u8))
@@ -340,7 +401,10 @@
         (let %vtype i32 (call $chk_sym_lookup %vname))
         (if (eq.i32 %vtype -1)
           (then (call $chk_error2 "Undefined variable" %vname))
-          (else))
+          (else
+            (if (call $chk_sym_is_freed %vname)
+              (then (call $chk_error2 "use of freed pointer" %vname))
+              (else))))
         (return %vtype))
       (else))
 
@@ -394,6 +458,8 @@
         ;; Setting a global is a mem effect
         (call $chk_check_global_set %sname)
         (call $check_node (load.field %n "left"))
+        ;; Reassignment resets freed state (e.g., realloc pattern)
+        (call $chk_sym_reset_state %sname)
         (return -1))
       (else))
 
@@ -443,13 +509,15 @@
     (if (eq.i32 %tag 12)
       (then
         (call $check_node (load.field %n "left"))
-        ;; then branch
+        ;; then branch (propagate frees conservatively)
         (call $chk_scope_enter)
         (call $check_body (load.field %n "children") (load.field %n "count"))
+        (call $chk_propagate_frees)
         (call $chk_scope_leave)
-        ;; else branch
+        ;; else branch (propagate frees conservatively)
         (call $chk_scope_enter)
         (call $check_body (load.field %n "children2") (load.field %n "count2"))
+        (call $chk_propagate_frees)
         (call $chk_scope_leave)
         (return -1))
       (else))
@@ -497,6 +565,20 @@
       (then
         (set $chk_effects (or.i32 $chk_effects 2))
         (call $check_node (load.field %n "left"))
+        ;; Track freed state if target is a simple var-ref
+        (let %free_target i32 (load.field %n "left"))
+        (if (ne.i32 %free_target -1)
+          (then
+            (let %ft (ptr $types.ASTNode) (call $types.ast_at %free_target))
+            (if (eq.i32 (load.field %ft "tag") 4)
+              (then
+                (let %fname (ptr u8) (load.field %ft "str1"))
+                (if (call $chk_sym_is_freed %fname)
+                  (then (call $chk_error2 "double free of" %fname))
+                  (else))
+                (call $chk_sym_mark_freed %fname))
+              (else)))
+          (else))
         (return -1))
       (else))
 
