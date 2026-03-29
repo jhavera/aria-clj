@@ -14,6 +14,7 @@
   (global mut $sym_muts    (ptr i32)      0)
   (global mut $sym_scopes  (ptr i32)      0)
   (global mut $sym_states  (ptr i32)      0)
+  (global mut $sym_alias   (ptr i32)      0)
   (global mut $sym_pos     i32            0)
   (global mut $sym_scope   i32            0)
 
@@ -58,6 +59,7 @@
     (set $sym_muts   (alloc i32 1024))
     (set $sym_scopes (alloc i32 1024))
     (set $sym_states (alloc i32 1024))
+    (set $sym_alias  (alloc i32 1024))
     (set $sym_pos    0)
     (set $sym_scope  0)
     ;; Function registry (256 entries)
@@ -149,6 +151,7 @@
     (store.i32 (add.i32 $sym_muts $sym_pos) $is_mut)
     (store.i32 (add.i32 $sym_scopes $sym_pos) $sym_scope)
     (store.i32 (add.i32 $sym_states $sym_pos) 0)
+    (store.i32 (add.i32 $sym_alias $sym_pos) -1)
     (set $sym_pos (add.i32 $sym_pos 1)))
 
   ;; ── Pointer state tracking ─────────────────────────────────
@@ -189,6 +192,20 @@
             (then (store.i32 (add.i32 $sym_states $i) 1) (return))
             (else (set $i (sub.i32 $i 1))))))))
 
+  (func $chk_sym_find_index
+    (param $name (ptr u8))
+    (result i32)
+    (effects mem io div)
+    (intent "Find the symbol table index for a variable name, or -1")
+    (local mut $i i32 (sub.i32 $sym_pos 1))
+    (loop $scan
+      (if (lt.i32 $i 0) (then (br $scan))
+        (else
+          (if (call $types.str_eq (load.i32 (add.i32 $sym_names $i)) $name)
+            (then (return $i))
+            (else (set $i (sub.i32 $i 1)))))))
+    (return -1))
+
   (func $chk_sym_mark_state
     (param $name (ptr u8))
     (param $state i32)
@@ -201,6 +218,27 @@
           (if (call $types.str_eq (load.i32 (add.i32 $sym_names $i)) $name)
             (then (store.i32 (add.i32 $sym_states $i) $state) (return))
             (else (set $i (sub.i32 $i 1))))))))
+
+  (func $chk_mark_freed_with_aliases
+    (param $name (ptr u8))
+    (effects mem io div)
+    (intent "Mark variable as freed and propagate to all aliases pointing to it")
+    ;; Find the index of the freed variable
+    (let %freed_idx i32 (call $chk_sym_find_index $name))
+    ;; Mark the variable itself as freed
+    (call $chk_sym_mark_freed $name)
+    ;; Scan all variables: if alias points to freed_idx, mark them freed too
+    (if (ne.i32 %freed_idx -1)
+      (then
+        (local mut $i i32 0)
+        (loop $alias_scan
+          (if (ge.i32 $i $sym_pos) (then (br $alias_scan))
+            (else
+              (if (eq.i32 (load.i32 (add.i32 $sym_alias $i)) %freed_idx)
+                (then (store.i32 (add.i32 $sym_states $i) 1))
+                (else))
+              (set $i (add.i32 $i 1))))))
+      (else)))
 
   (func $chk_sym_reset_state
     (param $name (ptr u8))
@@ -487,7 +525,18 @@
                     (then
                       ;; Pointer initialized from alloc → owns allocation
                       (call $chk_sym_mark_state (load.field %n "str1") 3))
-                    (else)))))))
+                    (else (if (eq.i32 %init_tag 4)
+                      (then
+                        ;; Pointer initialized from another variable → alias
+                        (let %alias_name (ptr u8) (load.field %init_node "str1"))
+                        (let %alias_idx i32 (call $chk_sym_find_index %alias_name))
+                        (if (ne.i32 %alias_idx -1)
+                          (then
+                            ;; Set alias: new var points to the same allocation
+                            (let %new_idx i32 (sub.i32 $sym_pos 1))
+                            (store.i32 (add.i32 $sym_alias %new_idx) %alias_idx))
+                          (else)))
+                      (else)))))))))
           (else))
         (return %lt))
       (else))
@@ -506,8 +555,12 @@
         ;; Setting a global is a mem effect
         (call $chk_check_global_set %sname)
         (call $check_node (load.field %n "left"))
-        ;; Reassignment resets freed state (e.g., realloc pattern)
+        ;; Reassignment resets freed state and clears alias
         (call $chk_sym_reset_state %sname)
+        (let %set_idx i32 (call $chk_sym_find_index %sname))
+        (if (ne.i32 %set_idx -1)
+          (then (store.i32 (add.i32 $sym_alias %set_idx) -1))
+          (else))
         (return -1))
       (else))
 
@@ -655,7 +708,7 @@
                 (if (eq.i32 (call $chk_sym_is_freed %fname) 1)
                   (then (call $chk_error2 "double free of" %fname))
                   (else))
-                (call $chk_sym_mark_freed %fname))
+                (call $chk_mark_freed_with_aliases %fname))
               (else)))
           (else))
         (return -1))
