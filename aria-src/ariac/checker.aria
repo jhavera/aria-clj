@@ -614,6 +614,10 @@
     (let %fn (ptr $types.ASTNode) (call $types.ast_at $func_aidx))
     (set $chk_fn_name (load.field %fn "str1"))
     (set $chk_effects 0)
+    ;; Verify intent annotation is present
+    (if (eq.i32 (load.field %fn "str2") 0)
+      (then (call $chk_error "function missing (intent ...) annotation"))
+      (else))
     ;; Enter function scope
     (call $chk_scope_enter)
     ;; Bind globals into scope

@@ -553,6 +553,38 @@
     (intent "Get current field pool position")
     (return $field_pos))
 
+  (func $count_line
+    (param $src (ptr u8))
+    (param $pos i32)
+    (result i32)
+    (effects mem div)
+    (intent "Count newlines from start to pos, return 1-based line number")
+    (local mut $line i32 1)
+    (local mut $i i32 0)
+    (loop $scan
+      (if (ge.i32 $i $pos) (then (br $scan))
+        (else
+          (if (eq.i32 (load.u8 (add.i32 $src $i)) 10)
+            (then (set $line (add.i32 $line 1)))
+            (else))
+          (set $i (add.i32 $i 1)))))
+    (return $line))
+
+  (func $count_col
+    (param $src (ptr u8))
+    (param $pos i32)
+    (result i32)
+    (effects mem div)
+    (intent "Count column: distance from last newline to pos, 1-based")
+    (local mut $i i32 (sub.i32 $pos 1))
+    (loop $scan
+      (if (lt.i32 $i 0) (then (br $scan))
+        (else
+          (if (eq.i32 (load.u8 (add.i32 $src $i)) 10)
+            (then (br $scan))
+            (else (set $i (sub.i32 $i 1)))))))
+    (return (sub.i32 $pos $i)))
+
   (func $get_mod_pos (result i32) (effects mem)
     (intent "Get current module registry count")
     (return $mod_pos))
@@ -910,6 +942,8 @@
   (export $mod_pos)
   (export $exp_pos)
   (export $cg_current_mod)
+  (export $count_line)
+  (export $count_col)
   (export $get_mod_pos)
   (export $get_mod_asts)
   (export $get_mod_status)

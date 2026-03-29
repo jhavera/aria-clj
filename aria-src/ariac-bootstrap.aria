@@ -275,6 +275,40 @@
     (if (eq.i32 $c 42) (then (return 1)) (else))
     (return 0))
 
+  ;; ── Reader helpers ──────────────────────────────────────────
+
+  (func $count_line
+    (param $src (ptr u8))
+    (param $pos i32)
+    (result i32)
+    (effects mem div)
+    (intent "Count newlines from start to pos, return 1-based line number")
+    (local mut $line i32 1)
+    (local mut $i i32 0)
+    (loop $scan
+      (if (ge.i32 $i $pos) (then (br $scan))
+        (else
+          (if (eq.i32 (load.u8 (add.i32 $src $i)) 10)
+            (then (set $line (add.i32 $line 1)))
+            (else))
+          (set $i (add.i32 $i 1)))))
+    (return $line))
+
+  (func $count_col
+    (param $src (ptr u8))
+    (param $pos i32)
+    (result i32)
+    (effects mem div)
+    (intent "Count column: distance from last newline to pos, 1-based")
+    (local mut $i i32 (sub.i32 $pos 1))
+    (loop $scan
+      (if (lt.i32 $i 0) (then (br $scan))
+        (else
+          (if (eq.i32 (load.u8 (add.i32 $src $i)) 10)
+            (then (br $scan))
+            (else (set $i (sub.i32 $i 1)))))))
+    (return (sub.i32 $pos $i)))
+
   ;; ── Reader parsing functions ───────────────────────────────
 
   (func $skip_ws
@@ -373,7 +407,7 @@
     (local mut $bi i32 0)
     (loop $str_loop
       (if (ge.i32 $p $len)
-        (then (call $trap "Unterminated string"))
+        (then (print "ERROR: Unterminated string at line %d, col %d\n" (call $count_line $src $p) (call $count_col $src $p)) (call $trap "parse error"))
         (else
           (let %c i32 (call $char_at $src $p))
           (if (eq.i32 %c 34)
@@ -438,7 +472,7 @@
     (intent "Parse one s-expression from source: list, string, number, or symbol")
     (local mut $p i32 (call $skip_ws $src $pos $len))
     (if (ge.i32 $p $len)
-      (then (call $trap "Unexpected end of input"))
+      (then (print "ERROR: Unexpected end of input at line %d, col %d\n" (call $count_line $src $p) (call $count_col $src $p)) (call $trap "parse error"))
       (else))
     (let %c i32 (call $char_at $src $p))
     (if (eq.i32 %c 40)
@@ -448,7 +482,7 @@
         (loop $list_loop
           (set $p (call $skip_ws $src $p $len))
           (if (ge.i32 $p $len)
-            (then (call $trap "Unterminated list"))
+            (then (print "ERROR: Unterminated list at line %d, col %d\n" (call $count_line $src $p) (call $count_col $src $p)) (call $trap "parse error"))
             (else))
           (if (eq.i32 (call $char_at $src $p) 41)
             (then (set $p (add.i32 $p 1)) (br $list_loop))
@@ -479,7 +513,8 @@
     (if (call $is_sym_char %c)
       (then (return (call $parse_sym $src $p $len $out_pos)))
       (else))
-    (call $trap "Unexpected character")
+    (print "ERROR: Unexpected character '%c' at line %d, col %d\n" (call $char_at $src $p) (call $count_line $src $p) (call $count_col $src $p))
+    (call $trap "parse error")
     (return 0))
 
   (func $read_all
@@ -2369,6 +2404,10 @@
     (let %fn (ptr $ASTNode) (call $ast_at $func_aidx))
     (set $chk_fn_name (load.field %fn "str1"))
     (set $chk_effects 0)
+    ;; Verify intent annotation is present
+    (if (eq.i32 (load.field %fn "str2") 0)
+      (then (call $chk_error "function missing (intent ...) annotation"))
+      (else))
     ;; Enter function scope
     (call $chk_scope_enter)
     ;; Bind globals into scope

@@ -241,6 +241,10 @@
 (defn- check-function
   "Type-check a single function."
   [checker func]
+  ;; Verify intent annotation
+  (when-not (:intent func)
+    (add-error! checker
+      (str "Function " (:name func) " missing (intent ...) annotation")))
   (let [env (make-env)
         ;; Bind globals
         env (reduce (fn [e [gname ginfo]]

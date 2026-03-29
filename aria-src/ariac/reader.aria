@@ -103,7 +103,7 @@
     (local mut $bi i32 0)
     (loop $str_loop
       (if (ge.i32 $p $len)
-        (then (call $types.trap "Unterminated string"))
+        (then (print "ERROR: Unterminated string at line %d, col %d\n" (call $types.count_line $src $p) (call $types.count_col $src $p)) (call $types.trap "parse error"))
         (else
           (let %c i32 (call $types.char_at $src $p))
           (if (eq.i32 %c 34)
@@ -168,7 +168,7 @@
     (intent "Parse one s-expression from source: list, string, number, or symbol")
     (local mut $p i32 (call $skip_ws $src $pos $len))
     (if (ge.i32 $p $len)
-      (then (call $types.trap "Unexpected end of input"))
+      (then (print "ERROR: Unexpected end of input at line %d, col %d\n" (call $types.count_line $src $p) (call $types.count_col $src $p)) (call $types.trap "parse error"))
       (else))
     (let %c i32 (call $types.char_at $src $p))
     (if (eq.i32 %c 40)
@@ -178,7 +178,7 @@
         (loop $list_loop
           (set $p (call $skip_ws $src $p $len))
           (if (ge.i32 $p $len)
-            (then (call $types.trap "Unterminated list"))
+            (then (print "ERROR: Unterminated list at line %d, col %d\n" (call $types.count_line $src $p) (call $types.count_col $src $p)) (call $types.trap "parse error"))
             (else))
           (if (eq.i32 (call $types.char_at $src $p) 41)
             (then (set $p (add.i32 $p 1)) (br $list_loop))
@@ -209,7 +209,8 @@
     (if (call $types.is_sym_char %c)
       (then (return (call $parse_sym $src $p $len $out_pos)))
       (else))
-    (call $types.trap "Unexpected character")
+    (print "ERROR: Unexpected character '%c' at line %d, col %d\n" (call $types.char_at $src $p) (call $types.count_line $src $p) (call $types.count_col $src $p))
+    (call $types.trap "parse error")
     (return 0))
 
   (func $read_all
