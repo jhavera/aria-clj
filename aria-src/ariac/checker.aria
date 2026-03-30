@@ -860,6 +860,36 @@
     (if (call $types.str_eq $suffix "bool") (then (return $ty_bool)) (else))
     (return $ty_i32))
 
+  ;; ── Field type lookup ───────────────────────────────────────
+
+  (func $chk_field_type
+    (param $obj_type i32)
+    (param $field_name (ptr u8))
+    (result i32)
+    (effects mem io div)
+    (intent "Look up field type given a pointer-to-struct type and field name")
+    (if (eq.i32 $obj_type -1) (then (return -1)) (else))
+    ;; obj_type should be a pointer (kind=1)
+    (let %obj_ti (ptr $types.TypeInfo) (call $types.type_at $obj_type))
+    (if (ne.i32 (load.field %obj_ti "kind") 1) (then (return -1)) (else))
+    ;; Get inner type (the struct)
+    (let %struct_idx i32 (load.field %obj_ti "inner"))
+    (if (eq.i32 %struct_idx -1) (then (return -1)) (else))
+    (let %struct_ti (ptr $types.TypeInfo) (call $types.type_at %struct_idx))
+    (if (ne.i32 (load.field %struct_ti "kind") 2) (then (return -1)) (else))
+    ;; Search fields
+    (let %fstart i32 (load.field %struct_ti "field_start"))
+    (let %fcount i32 (load.field %struct_ti "field_count"))
+    (local mut $fi i32 0)
+    (loop $fscan
+      (if (ge.i32 $fi %fcount) (then (br $fscan))
+        (else
+          (let %fld (ptr $types.FieldInfo) (call $types.field_at (add.i32 %fstart $fi)))
+          (if (call $types.str_eq (load.field %fld "name") $field_name)
+            (then (return (load.field %fld "type_idx")))
+            (else (set $fi (add.i32 $fi 1)))))))
+    (return -1))
+
   ;; ── Format string validation ────────────────────────────────
 
   (func $chk_count_format_specs
@@ -936,6 +966,8 @@
     (param $arg_type i32)
     (effects mem io)
     (intent "Check if arg type matches format specifier. Warn on mismatch")
+    ;; Skip if arg type is unknown (-1) — can't validate
+    (if (eq.i32 $arg_type -1) (then (return)) (else))
     ;; Integer specifiers: 'd'=100, 'i'=105, 'x'=120, 'o'=111, 'c'=99
     (if (eq.i32 $spec 100)
       (then (if (call $is_pointer_type $arg_type) (then (call $chk_warn "format '%d' expects integer, got pointer")) (else)))
@@ -1550,7 +1582,7 @@
     (if (eq.i32 %tag 21)
       (then
         (set $chk_effects (or.i32 $chk_effects 2))
-        (call $check_node (load.field %n "left"))
+        (let %lf_obj_type i32 (call $check_node (load.field %n "left")))
         ;; Check if field holds a freed pointer
         (let %lf_obj i32 (load.field %n "left"))
         (if (ne.i32 %lf_obj -1)
@@ -1563,7 +1595,8 @@
                   (else)))
               (else)))
           (else))
-        (return -1))
+        ;; Infer field type from struct definition
+        (return (call $chk_field_type %lf_obj_type (load.field %n "str2"))))
       (else))
 
     ;; 22: store-field
