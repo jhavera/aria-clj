@@ -1,0 +1,15 @@
+;; Test: leak on pointer reassignment
+;; Expected: WARN — reassigning owned pointer without free (potential leak) '$p'
+
+(module "test_leak_reassign"
+  (func $main
+    (result i32)
+    (effects io mem)
+    (intent "Reassign an owned pointer without freeing the old one")
+    (local mut $p (ptr i32) (alloc i32 4))
+    (store.i32 $p 10)
+    ;; Reassign without freeing the first allocation
+    (set $p (alloc i32 8))
+    (store.i32 $p 20)
+    (free $p)
+    (return 0)))

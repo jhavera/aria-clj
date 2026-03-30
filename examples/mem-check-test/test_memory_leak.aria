@@ -1,0 +1,12 @@
+;; Test: memory leak
+;; Expected: WARN — potential memory leak '%p'
+
+(module "test_memory_leak"
+  (func $main
+    (result i32)
+    (effects io mem)
+    (intent "Trigger memory leak warning by not freeing allocation")
+    (let %p (ptr i32) (alloc i32 16))
+    (store.i32 %p 99)
+    (print "stored: %d\n" (load.i32 %p))
+    (return 0)))

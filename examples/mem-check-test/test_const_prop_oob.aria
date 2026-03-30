@@ -1,0 +1,16 @@
+;; Test: out-of-bounds via constant propagation
+;; Expected: ERROR — out-of-bounds access on '%arr'
+
+(module "test_const_prop_oob"
+  (func $main
+    (result i32)
+    (effects io mem)
+    (intent "Use a constant variable as alloc size, then access past it")
+    (let %size i32 4)
+    (let %arr (ptr i32) (alloc i32 %size))
+    (store.i32 (add.i32 %arr 0) 10)
+    ;; Offset 5 >= capacity 4 (propagated from %size) → OOB
+    (let %val i32 (load.i32 (add.i32 %arr 5)))
+    (print "val = %d\n" %val)
+    (free %arr)
+    (return 0)))

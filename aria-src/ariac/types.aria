@@ -1,0 +1,955 @@
+; ═══════════════════════════════════════════════════════════
+; types — Shared types, externs, pools, and accessors
+; Leaf module: no imports. Everything else depends on this.
+; ═══════════════════════════════════════════════════════════
+
+(module "types"
+
+  ;; ── Extern declarations ────────────────────────────────────
+
+  (extern "sys" $trap (param $msg (ptr u8)))
+  (extern "sys" $str_len (param $s (ptr u8)) (result i32))
+  (extern "sys" $str_eq (param $a (ptr u8)) (param $b (ptr u8)) (result i32))
+  (extern "sys" $args_count (result i32))
+  (extern "sys" $args_get (param $i i32) (result (ptr u8)))
+  (extern "io" $file_read_all (param $path (ptr u8)) (result (ptr u8)))
+  (extern "io" $stdout_to_file (param $path (ptr u8)))
+  (extern "io" $stdout_restore)
+  (extern "sys" $system (param $cmd (ptr u8)) (result i32))
+
+  ;; ── Type definitions ───────────────────────────────────────
+
+  (type $SExp (struct
+    (field $tag i32)
+    (field $int_val i64)
+    (field $float_val f64)
+    (field $str_val (ptr u8))
+    (field $children (ptr i32))
+    (field $count i32)
+    (field $cap i32)))
+
+  (type $ASTNode (struct
+    (field $tag       i32)
+    (field $str1      (ptr u8))
+    (field $str2      (ptr u8))
+    (field $int1      i64)
+    (field $float1    f64)
+    (field $bool1     i32)
+    (field $type1     i32)
+    (field $type2     i32)
+    (field $left      i32)
+    (field $right     i32)
+    (field $children  (ptr i32))
+    (field $count     i32)
+    (field $cap       i32)
+    (field $children2 (ptr i32))
+    (field $count2    i32)
+    (field $cap2      i32)))
+
+  (type $TypeInfo (struct
+    (field $kind     i32)
+    (field $name     (ptr u8))
+    (field $inner    i32)
+    (field $size     i32)
+    (field $children (ptr i32))
+    (field $count    i32)
+    (field $cap      i32)
+    (field $result   i32)
+    (field $field_start i32)
+    (field $field_count i32)))
+
+  (type $FieldInfo (struct
+    (field $name (ptr u8))
+    (field $type_idx i32)))
+
+  ;; ═══════════════════════════════════════════════════════════
+  ;; Reader pool globals + management
+  ;; ═══════════════════════════════════════════════════════════
+
+  (global mut $node_pool (ptr $SExp) 0)
+  (global mut $pool_pos  i32 0)
+
+  (func $init_pool
+    (effects mem)
+    (intent "Allocate the SExp node pool with 65536 slots")
+    (set $node_pool (alloc $SExp 65536))
+    (set $pool_pos 0))
+
+  (func $alloc_node
+    (result i32)
+    (effects mem io)
+    (intent "Allocate a fresh SExp node, return its pool index")
+    (if (ge.i32 $pool_pos 65536)
+      (then (call $trap "Node pool exhausted"))
+      (else))
+    (let %idx i32 $pool_pos)
+    (let %n (ptr $SExp) (add.i32 $node_pool %idx))
+    (store.field %n "tag" 0)
+    (store.field %n "int_val" 0)
+    (store.field %n "float_val" 0.0)
+    (store.field %n "count" 0)
+    (store.field %n "cap" 0)
+    (set $pool_pos (add.i32 $pool_pos 1))
+    (return %idx))
+
+  (func $node_at
+    (param $idx i32)
+    (result (ptr $SExp))
+    (effects mem)
+    (intent "Get pointer to SExp node by pool index")
+    (return (add.i32 $node_pool $idx)))
+
+  ;; ── Reader node constructors ───────────────────────────────
+
+  (func $make_int
+    (param $val i64)
+    (result i32)
+    (effects mem io)
+    (intent "Create an integer literal SExp node")
+    (let %idx i32 (call $alloc_node))
+    (let %n (ptr $SExp) (call $node_at %idx))
+    (store.field %n "tag" 0)
+    (store.field %n "int_val" $val)
+    (return %idx))
+
+  (func $make_float
+    (param $val f64)
+    (result i32)
+    (effects mem io)
+    (intent "Create a float literal SExp node (tag=5)")
+    (let %idx i32 (call $alloc_node))
+    (let %n (ptr $SExp) (call $node_at %idx))
+    (store.field %n "tag" 5)
+    (store.field %n "float_val" $val)
+    (return %idx))
+
+  (func $make_string
+    (param $val (ptr u8))
+    (result i32)
+    (effects mem io)
+    (intent "Create a string literal SExp node")
+    (let %idx i32 (call $alloc_node))
+    (let %n (ptr $SExp) (call $node_at %idx))
+    (store.field %n "tag" 2)
+    (store.field %n "str_val" $val)
+    (return %idx))
+
+  (func $make_symbol
+    (param $val (ptr u8))
+    (result i32)
+    (effects mem io)
+    (intent "Create a symbol SExp node")
+    (let %idx i32 (call $alloc_node))
+    (let %n (ptr $SExp) (call $node_at %idx))
+    (store.field %n "tag" 3)
+    (store.field %n "str_val" $val)
+    (return %idx))
+
+  (func $make_list
+    (result i32)
+    (effects mem io)
+    (intent "Create an empty list SExp node with initial capacity 32")
+    (let %idx i32 (call $alloc_node))
+    (let %n (ptr $SExp) (call $node_at %idx))
+    (store.field %n "tag" 4)
+    (store.field %n "children" (alloc i32 32))
+    (store.field %n "count" 0)
+    (store.field %n "cap" 32)
+    (return %idx))
+
+  (func $list_append
+    (param $list_idx i32)
+    (param $child_idx i32)
+    (effects mem io div)
+    (intent "Append a child index to a list SExp node, growing if needed")
+    (let %list (ptr $SExp) (call $node_at $list_idx))
+    (let %count i32 (load.field %list "count"))
+    (let %cap i32 (load.field %list "cap"))
+    (if (ge.i32 %count %cap)
+      (then
+        (let %new_cap i32 (mul.i32 %cap 2))
+        (let %new_arr (ptr i32) (alloc i32 %new_cap))
+        (let %old_arr (ptr i32) (load.field %list "children"))
+        (local mut $i i32 0)
+        (loop $copy
+          (if (ge.i32 $i %count)
+            (then (br $copy))
+            (else
+              (store.i32 (add.i32 %new_arr $i) (load.i32 (add.i32 %old_arr $i)))
+              (set $i (add.i32 $i 1)))))
+        (free %old_arr)
+        (store.field %list "children" %new_arr)
+        (store.field %list "cap" %new_cap))
+      (else))
+    (let %list2 (ptr $SExp) (call $node_at $list_idx))
+    (let %arr (ptr i32) (load.field %list2 "children"))
+    (let %cnt i32 (load.field %list2 "count"))
+    (store.i32 (add.i32 %arr %cnt) $child_idx)
+    (store.field %list2 "count" (add.i32 %cnt 1)))
+
+  ;; ── Character helpers ──────────────────────────────────────
+
+  (func $char_at
+    (param $src (ptr u8))
+    (param $pos i32)
+    (result i32)
+    (effects mem)
+    (intent "Read a single byte from source at given position")
+    (return (load.u8 (add.i32 $src $pos))))
+
+  (func $is_whitespace
+    (param $c i32)
+    (result i32)
+    (effects pure)
+    (intent "Check if character is whitespace: space, newline, CR, or tab")
+    (if (eq.i32 $c 32) (then (return 1)) (else))
+    (if (eq.i32 $c 10) (then (return 1)) (else))
+    (if (eq.i32 $c 13) (then (return 1)) (else))
+    (if (eq.i32 $c 9)  (then (return 1)) (else))
+    (return 0))
+
+  (func $is_digit
+    (param $c i32)
+    (result i32)
+    (effects pure)
+    (intent "Check if character is an ASCII digit 0-9")
+    (if (ge.i32 $c 48)
+      (then (if (le.i32 $c 57) (then (return 1)) (else)))
+      (else))
+    (return 0))
+
+  (func $is_sym_char
+    (param $c i32)
+    (result i32)
+    (effects pure)
+    (intent "Check if character is valid in an ARIA symbol")
+    (if (ge.i32 $c 97) (then (if (le.i32 $c 122) (then (return 1)) (else))) (else))
+    (if (ge.i32 $c 65) (then (if (le.i32 $c 90)  (then (return 1)) (else))) (else))
+    (if (ge.i32 $c 48) (then (if (le.i32 $c 57)  (then (return 1)) (else))) (else))
+    (if (eq.i32 $c 95) (then (return 1)) (else))
+    (if (eq.i32 $c 45) (then (return 1)) (else))
+    (if (eq.i32 $c 46) (then (return 1)) (else))
+    (if (eq.i32 $c 36) (then (return 1)) (else))
+    (if (eq.i32 $c 37) (then (return 1)) (else))
+    (if (eq.i32 $c 47) (then (return 1)) (else))
+    (if (eq.i32 $c 42) (then (return 1)) (else))
+    (return 0))
+
+  ;; ── SExp accessors ─────────────────────────────────────────
+
+  (func $sexp_tag
+    (param $idx i32)
+    (result i32)
+    (effects mem)
+    (intent "Get the tag of a SExp node by index")
+    (return (load.field (call $node_at $idx) "tag")))
+
+  (func $sexp_str
+    (param $idx i32)
+    (result (ptr u8))
+    (effects mem)
+    (intent "Get the string value of a SExp node by index")
+    (return (load.field (call $node_at $idx) "str_val")))
+
+  (func $sexp_int
+    (param $idx i32)
+    (result i64)
+    (effects mem)
+    (intent "Get the integer value of a SExp node by index")
+    (return (load.field (call $node_at $idx) "int_val")))
+
+  (func $sexp_float
+    (param $idx i32)
+    (result f64)
+    (effects mem)
+    (intent "Get the float value of a SExp node by index")
+    (return (load.field (call $node_at $idx) "float_val")))
+
+  (func $sexp_child
+    (param $idx i32)
+    (param $n i32)
+    (result i32)
+    (effects mem)
+    (intent "Get the nth child index of a list SExp node")
+    (let %node (ptr $SExp) (call $node_at $idx))
+    (return (load.i32 (add.i32 (load.field %node "children") $n))))
+
+  (func $sexp_count
+    (param $idx i32)
+    (result i32)
+    (effects mem)
+    (intent "Get the child count of a list SExp node")
+    (return (load.field (call $node_at $idx) "count")))
+
+  ;; ── String helpers ─────────────────────────────────────────
+
+  (func $str_find_dot
+    (param $s (ptr u8))
+    (result i32)
+    (effects mem div)
+    (intent "Find position of first dot in string, return -1 if not found")
+    (local mut $i i32 0)
+    (loop $find
+      (let %c i32 (load.u8 (add.i32 $s $i)))
+      (if (eq.i32 %c 0) (then (return -1)) (else))
+      (if (eq.i32 %c 46) (then (return $i)) (else))
+      (set $i (add.i32 $i 1)))
+    (return -1))
+
+  (func $str_copy_range
+    (param $s (ptr u8))
+    (param $start i32)
+    (param $end i32)
+    (result (ptr u8))
+    (intent "Copy a substring from start to end into a new null-terminated buffer")
+    (effects mem div)
+    (intent "Copy a substring from start to end into a new null-terminated buffer")
+    (let %len i32 (sub.i32 $end $start))
+    (let %buf (ptr u8) (alloc u8 (add.i32 %len 1)))
+    (local mut $i i32 0)
+    (loop $copy
+      (if (ge.i32 $i %len)
+        (then (br $copy))
+        (else
+          (store.u8 (add.i32 %buf $i) (load.u8 (add.i32 $s (add.i32 $start $i))))
+          (set $i (add.i32 $i 1)))))
+    (store.u8 (add.i32 %buf %len) 0)
+    (return %buf))
+
+  (func $is_aria_var
+    (param $s (ptr u8))
+    (result i32)
+    (effects mem)
+    (intent "Check if string starts with $ or % (ARIA variable prefix)")
+    (let %c i32 (load.u8 $s))
+    (if (eq.i32 %c 36) (then (return 1)) (else))
+    (if (eq.i32 %c 37) (then (return 1)) (else))
+    (return 0))
+
+  ;; ═══════════════════════════════════════════════════════════
+  ;; Parser pool globals + management
+  ;; ═══════════════════════════════════════════════════════════
+
+  (global mut $ast_pool   (ptr $ASTNode)  0)
+  (global mut $ast_pos    i32             0)
+  (global mut $type_pool  (ptr $TypeInfo) 0)
+  (global mut $type_pos   i32             0)
+  (global mut $field_pool (ptr $FieldInfo) 0)
+  (global mut $field_pos  i32             0)
+
+  (func $init_parser
+    (effects mem)
+    (intent "Allocate AST, TypeInfo, and FieldInfo pools")
+    (set $ast_pool   (alloc $ASTNode  16384))
+    (set $ast_pos    0)
+    (set $type_pool  (alloc $TypeInfo 4096))
+    (set $type_pos   0)
+    (set $field_pool (alloc $FieldInfo 2048))
+    (set $field_pos  0))
+
+  (func $ast_alloc
+    (result i32)
+    (effects mem io)
+    (intent "Allocate a fresh AST node with default field values, return pool index")
+    (if (ge.i32 $ast_pos 16384)
+      (then (call $trap "AST pool exhausted"))
+      (else))
+    (let %idx i32 $ast_pos)
+    (let %n (ptr $ASTNode) (add.i32 $ast_pool %idx))
+    (store.field %n "tag" 0)
+    (store.field %n "str1" 0)
+    (store.field %n "str2" 0)
+    (store.field %n "int1" 0)
+    (store.field %n "float1" 0.0)
+    (store.field %n "bool1" 0)
+    (store.field %n "type1" -1)
+    (store.field %n "type2" -1)
+    (store.field %n "left" -1)
+    (store.field %n "right" -1)
+    (store.field %n "count" 0)
+    (store.field %n "cap" 0)
+    (store.field %n "count2" 0)
+    (store.field %n "cap2" 0)
+    (set $ast_pos (add.i32 $ast_pos 1))
+    (return %idx))
+
+  (func $ast_at
+    (param $idx i32)
+    (result (ptr $ASTNode))
+    (effects mem)
+    (intent "Get pointer to AST node by pool index")
+    (return (add.i32 $ast_pool $idx)))
+
+  (func $type_alloc
+    (result i32)
+    (effects mem io)
+    (intent "Allocate a fresh TypeInfo node with default values, return pool index")
+    (if (ge.i32 $type_pos 4096)
+      (then (call $trap "Type pool exhausted"))
+      (else))
+    (let %idx i32 $type_pos)
+    (let %t (ptr $TypeInfo) (add.i32 $type_pool %idx))
+    (store.field %t "kind" 0)
+    (store.field %t "name" 0)
+    (store.field %t "inner" -1)
+    (store.field %t "size" 0)
+    (store.field %t "count" 0)
+    (store.field %t "cap" 0)
+    (store.field %t "result" -1)
+    (store.field %t "field_start" 0)
+    (store.field %t "field_count" 0)
+    (set $type_pos (add.i32 $type_pos 1))
+    (return %idx))
+
+  (func $type_at
+    (param $idx i32)
+    (result (ptr $TypeInfo))
+    (effects mem)
+    (intent "Get pointer to TypeInfo node by pool index")
+    (return (add.i32 $type_pool $idx)))
+
+  (func $field_alloc
+    (result i32)
+    (effects mem io)
+    (intent "Allocate a FieldInfo entry for a struct field, return pool index")
+    (if (ge.i32 $field_pos 2048)
+      (then (call $trap "Field pool exhausted"))
+      (else))
+    (let %idx i32 $field_pos)
+    (set $field_pos (add.i32 $field_pos 1))
+    (return %idx))
+
+  (func $field_at
+    (param $idx i32)
+    (result (ptr $FieldInfo))
+    (effects mem)
+    (intent "Get pointer to FieldInfo entry by pool index")
+    (return (add.i32 $field_pool $idx)))
+
+  ;; ── AST children helpers ───────────────────────────────────
+
+  (func $ast_init_children
+    (param $node_idx i32)
+    (effects mem)
+    (intent "Initialize the primary children array on an AST node")
+    (let %n (ptr $ASTNode) (call $ast_at $node_idx))
+    (store.field %n "children" (alloc i32 16))
+    (store.field %n "count" 0)
+    (store.field %n "cap" 16))
+
+  (func $ast_init_children2
+    (param $node_idx i32)
+    (effects mem)
+    (intent "Initialize the secondary children array on an AST node")
+    (let %n (ptr $ASTNode) (call $ast_at $node_idx))
+    (store.field %n "children2" (alloc i32 16))
+    (store.field %n "count2" 0)
+    (store.field %n "cap2" 16))
+
+  (func $ast_push_child
+    (param $node_idx i32)
+    (param $child_idx i32)
+    (effects mem io div)
+    (intent "Append an AST index to the primary children array, growing if needed")
+    (let %node (ptr $ASTNode) (call $ast_at $node_idx))
+    (let %count i32 (load.field %node "count"))
+    (let %cap i32 (load.field %node "cap"))
+    (if (ge.i32 %count %cap)
+      (then
+        (let %new_cap i32 (mul.i32 %cap 2))
+        (let %new_arr (ptr i32) (alloc i32 %new_cap))
+        (let %old_arr (ptr i32) (load.field %node "children"))
+        (local mut $i i32 0)
+        (loop $copy
+          (if (ge.i32 $i %count)
+            (then (br $copy))
+            (else
+              (store.i32 (add.i32 %new_arr $i) (load.i32 (add.i32 %old_arr $i)))
+              (set $i (add.i32 $i 1)))))
+        (free %old_arr)
+        (let %n2 (ptr $ASTNode) (call $ast_at $node_idx))
+        (store.field %n2 "children" %new_arr)
+        (store.field %n2 "cap" %new_cap))
+      (else))
+    (let %n3 (ptr $ASTNode) (call $ast_at $node_idx))
+    (let %arr (ptr i32) (load.field %n3 "children"))
+    (let %cnt i32 (load.field %n3 "count"))
+    (store.i32 (add.i32 %arr %cnt) $child_idx)
+    (store.field %n3 "count" (add.i32 %cnt 1)))
+
+  (func $ast_push_child2
+    (param $node_idx i32)
+    (param $child_idx i32)
+    (effects mem io div)
+    (intent "Append an AST index to the secondary children array, growing if needed")
+    (let %node (ptr $ASTNode) (call $ast_at $node_idx))
+    (let %count i32 (load.field %node "count2"))
+    (let %cap i32 (load.field %node "cap2"))
+    (if (ge.i32 %count %cap)
+      (then
+        (let %new_cap i32 (mul.i32 %cap 2))
+        (let %new_arr (ptr i32) (alloc i32 %new_cap))
+        (let %old_arr (ptr i32) (load.field %node "children2"))
+        (local mut $i i32 0)
+        (loop $copy2
+          (if (ge.i32 $i %count)
+            (then (br $copy2))
+            (else
+              (store.i32 (add.i32 %new_arr $i) (load.i32 (add.i32 %old_arr $i)))
+              (set $i (add.i32 $i 1)))))
+        (free %old_arr)
+        (let %n2 (ptr $ASTNode) (call $ast_at $node_idx))
+        (store.field %n2 "children2" %new_arr)
+        (store.field %n2 "cap2" %new_cap))
+      (else))
+    (let %n3 (ptr $ASTNode) (call $ast_at $node_idx))
+    (let %arr (ptr i32) (load.field %n3 "children2"))
+    (let %cnt i32 (load.field %n3 "count2"))
+    (store.i32 (add.i32 %arr %cnt) $child_idx)
+    (store.field %n3 "count2" (add.i32 %cnt 1)))
+
+  ;; ── Debug ──────────────────────────────────────────────────
+
+  (func $print_sexp
+    (param $idx i32)
+    (effects io mem div)
+    (intent "Print a SExp tree in s-expression format for debugging")
+    (let %node (ptr $SExp) (call $node_at $idx))
+    (let %tag i32 (load.field %node "tag"))
+    (if (eq.i32 %tag 0)
+      (then (print "%ld" (load.field %node "int_val")) (return))
+      (else))
+    (if (eq.i32 %tag 5)
+      (then (print "%g" (load.field %node "float_val")) (return))
+      (else))
+    (if (eq.i32 %tag 2)
+      (then (print "\"%s\"" (load.field %node "str_val")) (return))
+      (else))
+    (if (eq.i32 %tag 3)
+      (then (print "%s" (load.field %node "str_val")) (return))
+      (else))
+    (if (eq.i32 %tag 4)
+      (then
+        (print "(")
+        (let %count i32 (load.field %node "count"))
+        (let %children (ptr i32) (load.field %node "children"))
+        (local mut $i i32 0)
+        (loop $pr
+          (if (ge.i32 $i %count)
+            (then (br $pr))
+            (else
+              (if (gt.i32 $i 0) (then (print " ")) (else))
+              (call $print_sexp (load.i32 (add.i32 %children $i)))
+              (set $i (add.i32 $i 1)))))
+        (print ")") (return))
+      (else))
+    (print "<?>"))
+
+  ;; ── Accessors for globals needed by other modules ──────────
+
+  (func $get_field_pos
+    (result i32)
+    (effects mem)
+    (intent "Get current field pool position")
+    (return $field_pos))
+
+  (func $count_line
+    (param $src (ptr u8))
+    (param $pos i32)
+    (result i32)
+    (effects mem div)
+    (intent "Count newlines from start to pos, return 1-based line number")
+    (local mut $line i32 1)
+    (local mut $i i32 0)
+    (loop $scan
+      (if (ge.i32 $i $pos) (then (br $scan))
+        (else
+          (if (eq.i32 (load.u8 (add.i32 $src $i)) 10)
+            (then (set $line (add.i32 $line 1)))
+            (else))
+          (set $i (add.i32 $i 1)))))
+    (return $line))
+
+  (func $count_col
+    (param $src (ptr u8))
+    (param $pos i32)
+    (result i32)
+    (effects mem div)
+    (intent "Count column: distance from last newline to pos, 1-based")
+    (local mut $i i32 (sub.i32 $pos 1))
+    (loop $scan
+      (if (lt.i32 $i 0) (then (br $scan))
+        (else
+          (if (eq.i32 (load.u8 (add.i32 $src $i)) 10)
+            (then (br $scan))
+            (else (set $i (sub.i32 $i 1)))))))
+    (return (sub.i32 $pos $i)))
+
+  (func $get_mod_pos (result i32) (effects mem)
+    (intent "Get current module registry count")
+    (return $mod_pos))
+  (func $get_mod_asts (param $i i32) (result i32) (effects mem)
+    (intent "Get AST index for module at registry position i")
+    (return (load.i32 (add.i32 $mod_asts $i))))
+  (func $get_mod_status (param $i i32) (result i32) (effects mem)
+    (intent "Get load status for module at registry position i")
+    (return (load.i32 (add.i32 $mod_status $i))))
+  (func $set_mod_status (param $i i32) (param $v i32) (effects mem)
+    (intent "Set load status for module at registry position i")
+    (store.i32 (add.i32 $mod_status $i) $v))
+  (func $get_cg_current_mod (result (ptr u8)) (effects mem)
+    (intent "Get the module name currently being code-generated")
+    (return $cg_current_mod))
+  (func $set_cg_current_mod (param $v (ptr u8)) (effects mem)
+    (intent "Set the module name currently being code-generated")
+    (set $cg_current_mod $v))
+
+  ;; ═══════════════════════════════════════════════════════════
+  ;; Module registry
+  ;; ═══════════════════════════════════════════════════════════
+
+  ;; ── Module registry globals ────────────────────────────────
+
+  (global mut $mod_names   (ptr (ptr u8)) 0)
+  (global mut $mod_paths   (ptr (ptr u8)) 0)
+  (global mut $mod_asts    (ptr i32)      0)
+  (global mut $mod_status  (ptr i32)      0)
+  (global mut $mod_pos     i32            0)
+
+  ;; Export tracking: flat array of (mod_idx, name) pairs
+  (global mut $exp_mod_idx  (ptr i32)      0)
+  (global mut $exp_names    (ptr (ptr u8)) 0)
+  (global mut $exp_pos      i32            0)
+
+  ;; Pre-allocated buffers for split_qualified_name (avoid per-call alloc/free)
+  (global mut $qbuf_mod    (ptr (ptr u8)) 0)
+  (global mut $qbuf_func   (ptr (ptr u8)) 0)
+  (global mut $qbuf_sigil  (ptr u8)       0)
+
+  ;; Current module being codegen'd (for name prefixing)
+  (global mut $cg_current_mod (ptr u8) 0)
+
+  (func $init_modules
+    (effects mem)
+    (intent "Allocate module registry arrays")
+    (set $mod_names  (alloc (ptr u8) 64))
+    (set $mod_paths  (alloc (ptr u8) 64))
+    (set $mod_asts   (alloc i32 64))
+    (set $mod_status (alloc i32 64))
+    (set $mod_pos    0)
+    (set $exp_mod_idx (alloc i32 1024))
+    (set $exp_names   (alloc (ptr u8) 1024))
+    (set $exp_pos     0)
+    (set $cg_current_mod 0)
+    (set $qbuf_mod   (alloc (ptr u8) 1))
+    (set $qbuf_func  (alloc (ptr u8) 1))
+    (set $qbuf_sigil (alloc u8 256)))
+
+  ;; ── Path helpers ───────────────────────────────────────────
+
+  (func $dirname
+    (param $path (ptr u8))
+    (result (ptr u8))
+    (effects mem io div)
+    (intent "Extract directory part of a path (everything up to last /)")
+    (let %len i32 (call $str_len $path))
+    (local mut $i i32 (sub.i32 %len 1))
+    (loop $scan
+      (if (lt.i32 $i 0) (then (br $scan))
+        (else
+          (if (eq.i32 (load.u8 (add.i32 $path $i)) 47)
+            (then (br $scan))
+            (else (set $i (sub.i32 $i 1)))))))
+    (if (lt.i32 $i 0)
+      (then (return "."))
+      (else))
+    (return (call $str_copy_range $path 0 $i)))
+
+  (func $path_join
+    (param $dir (ptr u8))
+    (param $file (ptr u8))
+    (result (ptr u8))
+    (effects mem io div)
+    (intent "Join directory and file: dir/file")
+    (let %dlen i32 (call $str_len $dir))
+    (let %flen i32 (call $str_len $file))
+    (let %buf (ptr u8) (alloc u8 (add.i32 (add.i32 %dlen %flen) 2)))
+    ;; Copy dir
+    (local mut $i i32 0)
+    (loop $cd
+      (if (ge.i32 $i %dlen) (then (br $cd))
+        (else
+          (store.u8 (add.i32 %buf $i) (load.u8 (add.i32 $dir $i)))
+          (set $i (add.i32 $i 1)))))
+    ;; Add /
+    (store.u8 (add.i32 %buf %dlen) 47)
+    ;; Copy file
+    (set $i 0)
+    (loop $cf
+      (if (ge.i32 $i %flen) (then (br $cf))
+        (else
+          (store.u8 (add.i32 %buf (add.i32 (add.i32 %dlen 1) $i)) (load.u8 (add.i32 $file $i)))
+          (set $i (add.i32 $i 1)))))
+    ;; Null terminate
+    (store.u8 (add.i32 %buf (add.i32 (add.i32 %dlen 1) %flen)) 0)
+    (return %buf))
+
+  ;; ── Module registry operations ─────────────────────────────
+
+  (func $find_module_by_path
+    (param $path (ptr u8))
+    (result i32)
+    (effects mem io div)
+    (intent "Find module index by path, return -1 if not found")
+    (local mut $i i32 0)
+    (loop $scan
+      (if (ge.i32 $i $mod_pos) (then (br $scan))
+        (else
+          (if (call $str_eq (load.i32 (add.i32 $mod_paths $i)) $path)
+            (then (return $i))
+            (else (set $i (add.i32 $i 1)))))))
+    (return -1))
+
+  (func $find_module_by_name
+    (param $name (ptr u8))
+    (result i32)
+    (effects mem io div)
+    (intent "Find module index by module name, return -1 if not found")
+    (local mut $i i32 0)
+    (loop $scan
+      (if (ge.i32 $i $mod_pos) (then (br $scan))
+        (else
+          (if (call $str_eq (load.i32 (add.i32 $mod_names $i)) $name)
+            (then (return $i))
+            (else (set $i (add.i32 $i 1)))))))
+    (return -1))
+
+  (func $register_module
+    (param $name (ptr u8))
+    (param $path (ptr u8))
+    (param $ast_idx i32)
+    (effects mem io)
+    (intent "Register a module in the registry")
+    (if (ge.i32 $mod_pos 64)
+      (then (call $trap "Module registry full"))
+      (else))
+    (store.i32 (add.i32 $mod_names $mod_pos) $name)
+    (store.i32 (add.i32 $mod_paths $mod_pos) $path)
+    (store.i32 (add.i32 $mod_asts $mod_pos) $ast_idx)
+    (store.i32 (add.i32 $mod_status $mod_pos) 1)
+    (set $mod_pos (add.i32 $mod_pos 1)))
+
+  (func $collect_exports
+    (param $mod_idx i32)
+    (effects mem io div)
+    (intent "Collect export declarations from a module into the export table")
+    (let %ast_idx i32 (load.i32 (add.i32 $mod_asts $mod_idx)))
+    (let %mn (ptr $ASTNode) (call $ast_at %ast_idx))
+    (let %c2 i32 (load.field %mn "count2"))
+    (let %arr2 (ptr i32) (load.field %mn "children2"))
+    (local mut $i i32 0)
+    (loop $exps
+      (if (ge.i32 $i %c2) (then (br $exps))
+        (else
+          (let %eidx i32 (load.i32 (add.i32 %arr2 $i)))
+          (let %en (ptr $ASTNode) (call $ast_at %eidx))
+          (if (eq.i32 (load.field %en "tag") 31)
+            (then
+              (if (ge.i32 $exp_pos 1024)
+                (then (call $trap "Export table full"))
+                (else))
+              (store.i32 (add.i32 $exp_mod_idx $exp_pos) $mod_idx)
+              (store.i32 (add.i32 $exp_names $exp_pos) (load.field %en "str1"))
+              (set $exp_pos (add.i32 $exp_pos 1)))
+            (else))
+          (set $i (add.i32 $i 1))))))
+
+  (func $is_exported
+    (param $mod_idx i32)
+    (param $name (ptr u8))
+    (result i32)
+    (effects mem io div)
+    (intent "Check if a name is exported by the given module")
+    (local mut $i i32 0)
+    (loop $scan
+      (if (ge.i32 $i $exp_pos) (then (br $scan))
+        (else
+          (if (eq.i32 (load.i32 (add.i32 $exp_mod_idx $i)) $mod_idx)
+            (then
+              (if (call $str_eq (load.i32 (add.i32 $exp_names $i)) $name)
+                (then (return 1))
+                (else)))
+            (else))
+          (set $i (add.i32 $i 1)))))
+    (return 0))
+
+  ;; ── Cross-module name resolution ───────────────────────────
+
+  (func $split_qualified_name
+    (param $name (ptr u8))
+    (param $out_mod (ptr (ptr u8)))
+    (param $out_func (ptr (ptr u8)))
+    (result i32)
+    (effects mem io div)
+    (intent "Split $mod.func into mod and func parts. Returns 1 if dotted, 0 if not.")
+    ;; Skip sigil ($)
+    (local mut $start i32 0)
+    (let %c0 i32 (load.u8 $name))
+    (if (eq.i32 %c0 36) (then (set $start 1)) (else))
+    (if (eq.i32 %c0 37) (then (set $start 1)) (else))
+    ;; Find dot
+    (local mut $i i32 $start)
+    (loop $scan
+      (let %c i32 (load.u8 (add.i32 $name $i)))
+      (if (eq.i32 %c 0) (then (br $scan))
+        (else (if (eq.i32 %c 46)
+          (then (br $scan))
+          (else (set $i (add.i32 $i 1)))))))
+    (if (eq.i32 (load.u8 (add.i32 $name $i)) 0)
+      (then (return 0))
+      (else))
+    ;; Split: $start..$i is mod name, $i+1..end is func name
+    (store.i32 $out_mod (call $str_copy_range $name $start $i))
+    (let %rest_start i32 (add.i32 $i 1))
+    (let %len i32 (call $str_len $name))
+    (store.i32 $out_func (call $str_copy_range $name %rest_start %len))
+    (return 1))
+
+  (func $resolve_qualified_fn
+    (param $name (ptr u8))
+    (param $current_mod_idx i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Resolve a qualified function name ($mod.func). Returns AST index or -1.")
+    ;; Use pre-allocated buffers (no per-call alloc/free)
+    (let %is_qual i32 (call $split_qualified_name $name $qbuf_mod $qbuf_func))
+    (if (eq.i32 %is_qual 0) (then (return -1)) (else))
+
+    (let %mname (ptr u8) (load.i32 $qbuf_mod))
+    (let %fname (ptr u8) (load.i32 $qbuf_func))
+
+    ;; Find the target module
+    (let %target_mod i32 (call $find_module_by_name %mname))
+    (if (eq.i32 %target_mod -1)
+      (then (return -1))
+      (else))
+
+    ;; Verify exported: build "$func_name" in pre-allocated sigil buffer
+    (store.u8 $qbuf_sigil 36)
+    (local mut $ci i32 0)
+    (loop $cp
+      (let %ch i32 (load.u8 (add.i32 %fname $ci)))
+      (if (eq.i32 %ch 0) (then (br $cp))
+        (else
+          (store.u8 (add.i32 $qbuf_sigil (add.i32 $ci 1)) %ch)
+          (set $ci (add.i32 $ci 1)))))
+    (store.u8 (add.i32 $qbuf_sigil (add.i32 $ci 1)) 0)
+
+    (if (eq.i32 (call $is_exported %target_mod $qbuf_sigil) 0)
+      (then (return -2))
+      (else))
+
+    ;; Find the function in the target module's AST
+    (let %tmod_ast i32 (load.i32 (add.i32 $mod_asts %target_mod)))
+    (let %tmn (ptr $ASTNode) (call $ast_at %tmod_ast))
+    (let %tc i32 (load.field %tmn "count"))
+    (let %tarr (ptr i32) (load.field %tmn "children"))
+    (local mut $fi i32 0)
+    (loop $find
+      (if (ge.i32 $fi %tc) (then (br $find))
+        (else
+          (let %fidx i32 (load.i32 (add.i32 %tarr $fi)))
+          (let %fn (ptr $ASTNode) (call $ast_at %fidx))
+          (if (eq.i32 (load.field %fn "tag") 28)
+            (then
+              ;; Compare function name (strip $ from both)
+              (let %fn_name (ptr u8) (load.field %fn "str1"))
+              (let %fn_bare (ptr u8) (add.i32 %fn_name 1))
+              (if (call $str_eq %fn_bare %fname)
+                (then (return %fidx))
+                (else)))
+            (else))
+          (set $fi (add.i32 $fi 1)))))
+    (return -1))
+
+  ;; ── Exports ────────────────────────────────────────────────
+
+  (export $trap)
+  (export $str_len)
+  (export $str_eq)
+  (export $args_count)
+  (export $args_get)
+  (export $file_read_all)
+  (export $stdout_to_file)
+  (export $stdout_restore)
+  (export $system)
+  (export $init_pool)
+  (export $alloc_node)
+  (export $node_at)
+  (export $make_int)
+  (export $make_float)
+  (export $make_string)
+  (export $make_symbol)
+  (export $make_list)
+  (export $list_append)
+  (export $char_at)
+  (export $is_whitespace)
+  (export $is_digit)
+  (export $is_sym_char)
+  (export $sexp_tag)
+  (export $sexp_str)
+  (export $sexp_int)
+  (export $sexp_float)
+  (export $sexp_child)
+  (export $sexp_count)
+  (export $str_find_dot)
+  (export $str_copy_range)
+  (export $is_aria_var)
+  (export $init_parser)
+  (export $ast_alloc)
+  (export $ast_at)
+  (export $type_alloc)
+  (export $type_at)
+  (export $field_alloc)
+  (export $field_at)
+  (export $get_field_pos)
+  (export $ast_init_children)
+  (export $ast_init_children2)
+  (export $ast_push_child)
+  (export $ast_push_child2)
+  (export $print_sexp)
+  (export $node_pool)
+  (export $pool_pos)
+  (export $ast_pool)
+  (export $ast_pos)
+  (export $type_pool)
+  (export $type_pos)
+  (export $field_pool)
+  (export $field_pos)
+  (export $init_modules)
+  (export $dirname)
+  (export $path_join)
+  (export $find_module_by_path)
+  (export $find_module_by_name)
+  (export $register_module)
+  (export $collect_exports)
+  (export $is_exported)
+  (export $split_qualified_name)
+  (export $resolve_qualified_fn)
+  (export $mod_names)
+  (export $mod_paths)
+  (export $mod_asts)
+  (export $mod_status)
+  (export $mod_pos)
+  (export $exp_pos)
+  (export $cg_current_mod)
+  (export $count_line)
+  (export $count_col)
+  (export $get_mod_pos)
+  (export $get_mod_asts)
+  (export $get_mod_status)
+  (export $set_mod_status)
+  (export $get_cg_current_mod)
+  (export $set_cg_current_mod)
+
+) ;; end module "types"

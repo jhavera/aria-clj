@@ -1,0 +1,15 @@
+;; Test: out-of-bounds access with literal offset
+;; Expected: ERROR — out-of-bounds access on '%arr'
+
+(module "test_oob_literal"
+  (func $main
+    (result i32)
+    (effects io mem)
+    (intent "Access element 10 of an 8-element array")
+    (let %arr (ptr i32) (alloc i32 8))
+    (store.i32 (add.i32 %arr 0) 1)
+    ;; Offset 10 >= capacity 8 → out of bounds
+    (let %val i32 (load.i32 (add.i32 %arr 10)))
+    (print "val = %d\n" %val)
+    (free %arr)
+    (return 0)))

@@ -1,0 +1,14 @@
+;; Test: use-after-free
+;; Expected: ERROR — use of freed pointer '%p'
+
+(module "test_use_after_free"
+  (func $main
+    (result i32)
+    (effects io mem)
+    (intent "Trigger use-after-free on a simple pointer")
+    (let %p (ptr i32) (alloc i32 4))
+    (store.i32 %p 42)
+    (free %p)
+    (let %val i32 (load.i32 %p))
+    (print "val = %d\n" %val)
+    (return 0)))

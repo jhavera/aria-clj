@@ -21,7 +21,7 @@
   (func $classify_token
     (param $tok (ptr u8))
     (result i32)
-    (effects io)
+    (effects io mem)
     (intent "Return a tag integer for known ARIA keywords")
     (if (call $str_eq $tok "module") (then (return 1)) (else))
     (if (call $str_eq $tok "func")   (then (return 2)) (else))

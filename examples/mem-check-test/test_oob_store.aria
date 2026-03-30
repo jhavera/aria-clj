@@ -1,0 +1,13 @@
+;; Test: out-of-bounds store with literal offset
+;; Expected: ERROR — out-of-bounds access on '%buf'
+
+(module "test_oob_store"
+  (func $main
+    (result i32)
+    (effects io mem)
+    (intent "Write past the end of a 4-element buffer")
+    (let %buf (ptr i32) (alloc i32 4))
+    ;; Offset 4 == capacity 4 → out of bounds (valid indices: 0..3)
+    (store.i32 (add.i32 %buf 4) 99)
+    (free %buf)
+    (return 0)))

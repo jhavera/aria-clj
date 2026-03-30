@@ -1,0 +1,241 @@
+(module "reader"
+  (import "types.aria")
+
+  ;; ═══════════════════════════════════════════════════════════
+  ;; READER — Parsing functions
+  ;; Parses ARIA source text into a flat pool of SExp nodes.
+  ;; Pool management and helpers live in the types module.
+  ;; ═══════════════════════════════════════════════════════════
+
+  (func $skip_ws
+    (param $src (ptr u8))
+    (param $pos i32)
+    (param $len i32)
+    (result i32)
+    (effects mem div)
+    (intent "Skip whitespace and semicolon line comments, return new position")
+    (local mut $p i32 $pos)
+    (loop $ws_loop
+      (if (ge.i32 $p $len)
+        (then (br $ws_loop))
+        (else
+          (let %c i32 (call $types.char_at $src $p))
+          (if (eq.i32 %c 59)
+            (then
+              (loop $comment
+                (if (ge.i32 $p $len)
+                  (then (br $comment))
+                  (else
+                    (if (eq.i32 (call $types.char_at $src $p) 10)
+                      (then (set $p (add.i32 $p 1)) (br $comment))
+                      (else (set $p (add.i32 $p 1))))))))
+            (else
+              (if (call $types.is_whitespace %c)
+                (then (set $p (add.i32 $p 1)))
+                (else (br $ws_loop))))))))
+    (return $p))
+
+  (func $parse_number
+    (param $src (ptr u8))
+    (param $pos i32)
+    (param $len i32)
+    (param $out_pos (ptr i32))
+    (result i32)
+    (effects mem io div)
+    (intent "Parse an integer or float literal from source text into a SExp node")
+    (local mut $p i32 $pos)
+    (local mut $val i64 0)
+    (local mut $neg i32 0)
+    (if (eq.i32 (call $types.char_at $src $p) 45)
+      (then
+        (if (call $types.is_digit (call $types.char_at $src (add.i32 $p 1)))
+          (then (set $neg 1) (set $p (add.i32 $p 1)))
+          (else)))
+      (else))
+    (loop $digits
+      (if (ge.i32 $p $len)
+        (then (br $digits))
+        (else
+          (let %c i32 (call $types.char_at $src $p))
+          (if (call $types.is_digit %c)
+            (then
+              (set $val (add.i64 (mul.i64 $val 10) (cast i32 i64 (sub.i32 %c 48))))
+              (set $p (add.i32 $p 1)))
+            (else (br $digits))))))
+    ;; Check for decimal point -> float
+    (if (lt.i32 $p $len)
+      (then
+        (if (eq.i32 (call $types.char_at $src $p) 46)
+          (then
+            (set $p (add.i32 $p 1))
+            (local mut $fval f64 (cast i64 f64 $val))
+            (local mut $divisor f64 10.0)
+            (loop $frac
+              (if (ge.i32 $p $len)
+                (then (br $frac))
+                (else
+                  (let %fc i32 (call $types.char_at $src $p))
+                  (if (call $types.is_digit %fc)
+                    (then
+                      (set $fval (add.f64 $fval (div.f64 (cast i32 f64 (sub.i32 %fc 48)) $divisor)))
+                      (set $divisor (mul.f64 $divisor 10.0))
+                      (set $p (add.i32 $p 1)))
+                    (else (br $frac))))))
+            (if $neg (then (set $fval (sub.f64 0.0 $fval))) (else))
+            (store.i32 $out_pos $p)
+            (return (call $types.make_float $fval)))
+          (else)))
+      (else))
+    (if $neg (then (set $val (sub.i64 0 $val))) (else))
+    (store.i32 $out_pos $p)
+    (return (call $types.make_int $val)))
+
+  (func $parse_str
+    (param $src (ptr u8))
+    (param $pos i32)
+    (param $len i32)
+    (param $out_pos (ptr i32))
+    (result i32)
+    (effects mem io div)
+    (intent "Parse a double-quoted string literal with escape sequences")
+    (local mut $p i32 (add.i32 $pos 1))
+    (let %buf (ptr u8) (alloc u8 1024))
+    (local mut $bi i32 0)
+    (loop $str_loop
+      (if (ge.i32 $p $len)
+        (then (print "ERROR: Unterminated string at line %d, col %d\n" (call $types.count_line $src $p) (call $types.count_col $src $p)) (call $types.trap "parse error"))
+        (else
+          (let %c i32 (call $types.char_at $src $p))
+          (if (eq.i32 %c 34)
+            (then (set $p (add.i32 $p 1)) (br $str_loop))
+            (else
+              (if (eq.i32 %c 92)
+                (then
+                  (set $p (add.i32 $p 1))
+                  (let %esc i32 (call $types.char_at $src $p))
+                  (if (eq.i32 %esc 110)
+                    (then (store.u8 (add.i32 %buf $bi) 10))
+                    (else (if (eq.i32 %esc 116)
+                      (then (store.u8 (add.i32 %buf $bi) 9))
+                      (else (if (eq.i32 %esc 92)
+                        (then (store.u8 (add.i32 %buf $bi) 92))
+                        (else (if (eq.i32 %esc 34)
+                          (then (store.u8 (add.i32 %buf $bi) 34))
+                          (else (store.u8 (add.i32 %buf $bi) %esc)))))))))
+                  (set $bi (add.i32 $bi 1))
+                  (set $p (add.i32 $p 1)))
+                (else
+                  (store.u8 (add.i32 %buf $bi) %c)
+                  (set $bi (add.i32 $bi 1))
+                  (set $p (add.i32 $p 1)))))))))
+    (store.u8 (add.i32 %buf $bi) 0)
+    (store.i32 $out_pos $p)
+    (return (call $types.make_string %buf)))
+
+  (func $parse_sym
+    (param $src (ptr u8))
+    (param $pos i32)
+    (param $len i32)
+    (param $out_pos (ptr i32))
+    (result i32)
+    (effects mem io div)
+    (intent "Parse a symbol token from source text into a SExp node")
+    (local mut $p i32 $pos)
+    (let %buf (ptr u8) (alloc u8 256))
+    (local mut $bi i32 0)
+    (loop $sym_loop
+      (if (ge.i32 $p $len)
+        (then (br $sym_loop))
+        (else
+          (let %c i32 (call $types.char_at $src $p))
+          (if (call $types.is_sym_char %c)
+            (then
+              (store.u8 (add.i32 %buf $bi) %c)
+              (set $bi (add.i32 $bi 1))
+              (set $p (add.i32 $p 1)))
+            (else (br $sym_loop))))))
+    (store.u8 (add.i32 %buf $bi) 0)
+    (store.i32 $out_pos $p)
+    (return (call $types.make_symbol %buf)))
+
+  (func $parse_sexp
+    (param $src (ptr u8))
+    (param $pos i32)
+    (param $len i32)
+    (param $out_pos (ptr i32))
+    (result i32)
+    (effects mem io div)
+    (intent "Parse one s-expression from source: list, string, number, or symbol")
+    (local mut $p i32 (call $skip_ws $src $pos $len))
+    (if (ge.i32 $p $len)
+      (then (print "ERROR: Unexpected end of input at line %d, col %d\n" (call $types.count_line $src $p) (call $types.count_col $src $p)) (call $types.trap "parse error"))
+      (else))
+    (let %c i32 (call $types.char_at $src $p))
+    (if (eq.i32 %c 40)
+      (then
+        (set $p (add.i32 $p 1))
+        (let %list_idx i32 (call $types.make_list))
+        (loop $list_loop
+          (set $p (call $skip_ws $src $p $len))
+          (if (ge.i32 $p $len)
+            (then (print "ERROR: Unterminated list at line %d, col %d\n" (call $types.count_line $src $p) (call $types.count_col $src $p)) (call $types.trap "parse error"))
+            (else))
+          (if (eq.i32 (call $types.char_at $src $p) 41)
+            (then (set $p (add.i32 $p 1)) (br $list_loop))
+            (else
+              (let %out (ptr i32) (alloc i32))
+              (let %child_idx i32 (call $parse_sexp $src $p $len %out))
+              (set $p (load.i32 %out))
+              (free %out)
+              (call $types.list_append %list_idx %child_idx))))
+        (store.i32 $out_pos $p)
+        (return %list_idx))
+      (else))
+    (if (eq.i32 %c 34)
+      (then (return (call $parse_str $src $p $len $out_pos)))
+      (else))
+    (if (call $types.is_digit %c)
+      (then (return (call $parse_number $src $p $len $out_pos)))
+      (else))
+    (if (eq.i32 %c 45)
+      (then
+        (if (lt.i32 (add.i32 $p 1) $len)
+          (then
+            (if (call $types.is_digit (call $types.char_at $src (add.i32 $p 1)))
+              (then (return (call $parse_number $src $p $len $out_pos)))
+              (else)))
+          (else)))
+      (else))
+    (if (call $types.is_sym_char %c)
+      (then (return (call $parse_sym $src $p $len $out_pos)))
+      (else))
+    (print "ERROR: Unexpected character '%c' at line %d, col %d\n" (call $types.char_at $src $p) (call $types.count_line $src $p) (call $types.count_col $src $p))
+    (call $types.trap "parse error")
+    (return 0))
+
+  (func $read_all
+    (param $src (ptr u8))
+    (result i32)
+    (effects mem io div)
+    (intent "Read all top-level s-expressions from source into a list node")
+    (let %len i32 (call $types.str_len $src))
+    (let %result_idx i32 (call $types.make_list))
+    (let %out (ptr i32) (alloc i32))
+    (local mut $p i32 0)
+    (loop $read_loop
+      (set $p (call $skip_ws $src $p %len))
+      (if (ge.i32 $p %len)
+        (then (br $read_loop))
+        (else
+          (let %child_idx i32 (call $parse_sexp $src $p %len %out))
+          (set $p (load.i32 %out))
+          (call $types.list_append %result_idx %child_idx))))
+    (free %out)
+    (return %result_idx))
+
+  (export $read_all)
+  (export $skip_ws)
+  (export $parse_number)
+  (export $parse_str)
+  (export $parse_sym)
+  (export $parse_sexp))

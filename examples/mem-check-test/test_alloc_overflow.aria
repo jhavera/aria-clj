@@ -1,0 +1,14 @@
+;; Test: alloc size with multiplication (integer overflow risk)
+;; Expected: WARN — alloc size uses multiplication (risk of integer overflow)
+
+(module "test_alloc_overflow"
+  (func $main
+    (param $rows i32)
+    (param $cols i32)
+    (result i32)
+    (effects io mem)
+    (intent "Allocate with multiplied size — overflow risk")
+    ;; rows * cols could overflow i32
+    (let %buf (ptr i32) (alloc i32 (mul.i32 $rows $cols)))
+    (free %buf)
+    (return 0)))

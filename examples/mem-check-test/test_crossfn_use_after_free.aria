@@ -1,0 +1,22 @@
+;; Test: cross-function use-after-free
+;; Callee frees the pointer, caller uses it afterwards.
+;; Expected: ERROR — use of freed pointer '%data'
+
+(module "test_crossfn_use_after_free"
+  (func $release
+    (param $ptr (ptr i32))
+    (effects mem)
+    (intent "Releases memory pointed to by ptr")
+    (free $ptr))
+
+  (func $main
+    (result i32)
+    (effects io mem)
+    (intent "Trigger cross-function use-after-free")
+    (let %data (ptr i32) (alloc i32 8))
+    (store.i32 %data 99)
+    (call $release %data)
+    ;; %data was freed inside $release — use-after-free
+    (let %val i32 (load.i32 %data))
+    (print "val = %d\n" %val)
+    (return 0)))

@@ -1,0 +1,15 @@
+(module "main"
+
+  (import "math.aria")
+
+  (func $main
+    (result i32)
+    (effects io div)
+    (intent "Demo: import math module and use its functions")
+
+    (print "GCD(48, 18) = %d\n" (call $math.gcd 48 18))
+    (print "GCD(100, 75) = %d\n" (call $math.gcd 100 75))
+    (print "10! = %ld\n" (call $math.factorial 10))
+    (return 0))
+
+  (export $main))

@@ -1,0 +1,22 @@
+;; Test: cross-function free through local alias
+;; Callee aliases the param and frees the alias.
+;; Expected: ERROR — double free of '%arr'
+
+(module "test_crossfn_alias_free"
+  (func $destroy
+    (param $p (ptr i32))
+    (effects mem)
+    (intent "Frees param indirectly through a local alias")
+    (let %local_ref (ptr i32) $p)
+    (free %local_ref))
+
+  (func $main
+    (result i32)
+    (effects io mem)
+    (intent "Trigger cross-function double free via alias in callee")
+    (let %arr (ptr i32) (alloc i32 10))
+    (store.i32 %arr 55)
+    (call $destroy %arr)
+    ;; %arr freed inside $destroy via alias — double free
+    (free %arr)
+    (return 0)))

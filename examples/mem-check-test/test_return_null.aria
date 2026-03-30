@@ -1,0 +1,16 @@
+;; Test: returning literal 0 from a pointer-returning function
+;; Expected: WARN — returning null literal from pointer-returning function
+
+(module "test_return_null"
+  (func $make_null
+    (result (ptr i32))
+    (effects mem)
+    (intent "Return literal null from a pointer-returning function")
+    (return 0))
+
+  (func $main
+    (result i32)
+    (effects io mem)
+    (intent "Trigger returning null literal")
+    (let %ptr (ptr i32) (call $make_null))
+    (return 0)))

@@ -1,0 +1,15 @@
+;; Test: negative offset on pointer
+;; Expected: ERROR — negative offset on '%arr'
+;; Note: only detectable with literal negative offsets
+
+(module "test_oob_negative"
+  (func $main
+    (result i32)
+    (effects io mem)
+    (intent "Access a pointer at a negative literal offset")
+    (let %arr (ptr i32) (alloc i32 4))
+    ;; Negative offset → always invalid
+    (let %val i32 (load.i32 (add.i32 %arr -1)))
+    (print "val = %d\n" %val)
+    (free %arr)
+    (return 0)))

@@ -1,0 +1,1314 @@
+; ═══════════════════════════════════════════════════════════
+; codegen — Emits C99 source to stdout from validated AST.
+; Uses print-to-stdout approach (no string buffer).
+; Reads from: ast_pool, type_pool (parser output via types module)
+; ═══════════════════════════════════════════════════════════
+
+(module "codegen"
+  (import "types.aria")
+
+  ;; ── Codegen globals ────────────────────────────────────────
+
+  (global mut $cg_indent     i32            0)
+  (global mut $cg_label      i32            0)
+  (global mut $cg_loop_names (ptr (ptr u8)) 0)
+  (global mut $cg_loop_ids   (ptr i32)      0)
+  (global mut $cg_loop_pos   i32            0)
+  (global mut $cg_has_args   i32            0)
+
+  ;; Pre-allocated buffers for split_qualified_name (avoid per-call alloc/free)
+  (global mut $cg_qbuf_mod  (ptr (ptr u8)) 0)
+  (global mut $cg_qbuf_func (ptr (ptr u8)) 0)
+
+  ;; ── Codegen init ───────────────────────────────────────────
+
+  (func $init_codegen
+    (effects mem)
+    (intent "Initialize codegen state")
+    (set $cg_indent 0)
+    (set $cg_label 0)
+    (set $cg_loop_names (alloc (ptr u8) 1024))
+    (set $cg_loop_ids   (alloc i32 1024))
+    (set $cg_loop_pos   0)
+    (set $cg_has_args   0)
+    (set $cg_qbuf_mod  (alloc (ptr u8) 1))
+    (set $cg_qbuf_func (alloc (ptr u8) 1)))
+
+  ;; ── Codegen helpers ────────────────────────────────────────
+
+  (func $cg_emit_indent
+    (effects io div)
+    (intent "Print indentation: 4 spaces per indent level")
+    (local mut $i i32 0)
+    (loop $ind
+      (if (ge.i32 $i $cg_indent)
+        (then (br $ind))
+        (else (print "    ") (set $i (add.i32 $i 1))))))
+
+  (func $cg_emit_name
+    (param $name (ptr u8))
+    (effects io mem div)
+    (intent "Print ARIA name as valid C identifier: strip sigil, replace ./- with _")
+    (local mut $i i32 0)
+    (let %c0 i32 (load.u8 $name))
+    (if (eq.i32 %c0 36)  (then (set $i 1)) (else))
+    (if (eq.i32 %c0 37)  (then (set $i 1)) (else))
+    (loop $chars
+      (let %c i32 (load.u8 (add.i32 $name $i)))
+      (if (eq.i32 %c 0) (then (br $chars))
+        (else
+          (if (eq.i32 %c 46) (then (print "_"))
+            (else (if (eq.i32 %c 45) (then (print "_"))
+              (else (print "%c" %c)))))
+          (set $i (add.i32 $i 1))))))
+
+  (func $cg_emit_type
+    (param $tidx i32)
+    (effects io mem div)
+    (intent "Print C type from TypeInfo pool index")
+    (if (eq.i32 $tidx -1) (then (print "void") (return)) (else))
+    (let %t (ptr $types.TypeInfo) (call $types.type_at $tidx))
+    (let %kind i32 (load.field %t "kind"))
+    ;; Primitive
+    (if (eq.i32 %kind 0)
+      (then
+        (let %name (ptr u8) (load.field %t "name"))
+        (if (call $types.str_eq %name "i32")  (then (print "int32_t") (return)) (else))
+        (if (call $types.str_eq %name "i64")  (then (print "int64_t") (return)) (else))
+        (if (call $types.str_eq %name "u8")   (then (print "uint8_t") (return)) (else))
+        (if (call $types.str_eq %name "u16")  (then (print "uint16_t") (return)) (else))
+        (if (call $types.str_eq %name "u32")  (then (print "uint32_t") (return)) (else))
+        (if (call $types.str_eq %name "u64")  (then (print "uint64_t") (return)) (else))
+        (if (call $types.str_eq %name "i8")   (then (print "int8_t") (return)) (else))
+        (if (call $types.str_eq %name "i16")  (then (print "int16_t") (return)) (else))
+        (if (call $types.str_eq %name "f32")  (then (print "float") (return)) (else))
+        (if (call $types.str_eq %name "f64")  (then (print "double") (return)) (else))
+        (if (call $types.str_eq %name "bool") (then (print "bool") (return)) (else))
+        (if (call $types.str_eq %name "void") (then (print "void") (return)) (else))
+        ;; Named type (possibly qualified: $types.Point -> Point)
+        (let %tdot i32 (call $types.str_find_dot %name))
+        (if (ne.i32 %tdot -1)
+          (then (call $cg_emit_name (add.i32 %name (add.i32 %tdot 1))))
+          (else (call $cg_emit_name %name)))
+        (return))
+      (else))
+    ;; Pointer
+    (if (eq.i32 %kind 1)
+      (then (call $cg_emit_type (load.field %t "inner")) (print "*") (return))
+      (else))
+    ;; Array
+    (if (eq.i32 %kind 2)
+      (then (call $cg_emit_type (load.field %t "inner")) (return))
+      (else))
+    ;; Struct: strip module prefix if qualified ($types.Point -> Point)
+    (if (eq.i32 %kind 4)
+      (then
+        (let %tname (ptr u8) (load.field %t "name"))
+        (let %dot i32 (call $types.str_find_dot %tname))
+        (if (ne.i32 %dot -1)
+          (then
+            ;; Qualified: emit only the part after the dot
+            (let %after_dot (ptr u8) (add.i32 %tname (add.i32 %dot 1)))
+            (call $cg_emit_name %after_dot))
+          (else (call $cg_emit_name %tname)))
+        (return))
+      (else))
+    (print "void"))
+
+  (func $cg_emit_escaped_str
+    (param $s (ptr u8))
+    (effects io mem div)
+    (intent "Print string with C escaping: newline->\\n, tab->\\t, backslash->\\\\, quote->\\\"")
+    (local mut $i i32 0)
+    (loop $esc
+      (let %c i32 (load.u8 (add.i32 $s $i)))
+      (if (eq.i32 %c 0) (then (br $esc))
+        (else
+          (if (eq.i32 %c 10) (then (print "%c" 92) (print "n"))
+            (else (if (eq.i32 %c 9)  (then (print "%c" 92) (print "t"))
+              (else (if (eq.i32 %c 92) (then (print "%c" 92) (print "%c" 92))
+                (else (if (eq.i32 %c 34) (then (print "%c" 92) (print "%c" 34))
+                  (else (print "%c" %c)))))))))
+          (set $i (add.i32 $i 1))))))
+
+  (func $cg_fresh_label
+    (result i32)
+    (effects mem)
+    (intent "Return a fresh unique label ID")
+    (set $cg_label (add.i32 $cg_label 1))
+    (return $cg_label))
+
+  (func $cg_push_loop
+    (param $name (ptr u8))
+    (param $id i32)
+    (effects mem io)
+    (intent "Register a loop label name with its break label ID")
+    (if (ge.i32 $cg_loop_pos 1024)
+      (then (call $types.trap "Codegen loop label registry full"))
+      (else))
+    (store.i32 (add.i32 $cg_loop_names $cg_loop_pos) $name)
+    (store.i32 (add.i32 $cg_loop_ids $cg_loop_pos) $id)
+    (set $cg_loop_pos (add.i32 $cg_loop_pos 1)))
+
+  (func $cg_emit_op
+    (param $op (ptr u8))
+    (effects io mem)
+    (intent "Print C binary operator from ARIA op name")
+    (if (call $types.str_eq $op "add") (then (print " + ") (return)) (else))
+    (if (call $types.str_eq $op "sub") (then (print " - ") (return)) (else))
+    (if (call $types.str_eq $op "mul") (then (print " * ") (return)) (else))
+    (if (call $types.str_eq $op "div") (then (print " / ") (return)) (else))
+    (if (call $types.str_eq $op "rem") (then (print " %% ") (return)) (else))
+    (if (call $types.str_eq $op "and") (then (print " & ") (return)) (else))
+    (if (call $types.str_eq $op "or")  (then (print " | ") (return)) (else))
+    (if (call $types.str_eq $op "xor") (then (print " ^ ") (return)) (else))
+    (if (call $types.str_eq $op "shl") (then (print " << ") (return)) (else))
+    (if (call $types.str_eq $op "shr") (then (print " >> ") (return)) (else))
+    (print " + "))
+
+  (func $cg_emit_cmpop
+    (param $op (ptr u8))
+    (effects io mem)
+    (intent "Print C comparison operator from ARIA cmp name")
+    (if (call $types.str_eq $op "eq") (then (print " == ") (return)) (else))
+    (if (call $types.str_eq $op "ne") (then (print " != ") (return)) (else))
+    (if (call $types.str_eq $op "lt") (then (print " < ") (return)) (else))
+    (if (call $types.str_eq $op "le") (then (print " <= ") (return)) (else))
+    (if (call $types.str_eq $op "gt") (then (print " > ") (return)) (else))
+    (if (call $types.str_eq $op "ge") (then (print " >= ") (return)) (else))
+    (print " == "))
+
+  ;; ── Codegen: emit_expr ─────────────────────────────────────
+
+  (func $cg_emit_expr
+    (param $aidx i32)
+    (effects io mem div)
+    (intent "Print a C expression inline from AST node")
+    (if (eq.i32 $aidx -1) (then (print "0") (return)) (else))
+    (let %n (ptr $types.ASTNode) (call $types.ast_at $aidx))
+    (let %tag i32 (load.field %n "tag"))
+
+    ;; 0: int-lit
+    (if (eq.i32 %tag 0) (then (print "%ld" (load.field %n "int1")) (return)) (else))
+    ;; 1: float-lit
+    (if (eq.i32 %tag 1) (then (print "%g" (load.field %n "float1")) (return)) (else))
+    ;; 2: bool-lit
+    (if (eq.i32 %tag 2)
+      (then (if (load.field %n "bool1") (then (print "true")) (else (print "false"))) (return))
+      (else))
+    ;; 3: str-lit
+    (if (eq.i32 %tag 3)
+      (then (print "(uint8_t*)%c" 34) (call $cg_emit_escaped_str (load.field %n "str1")) (print "%c" 34) (return))
+      (else))
+    ;; 4: var-ref
+    (if (eq.i32 %tag 4)
+      (then (call $cg_emit_name (load.field %n "str1")) (return))
+      (else))
+    ;; 5: bin-op
+    (if (eq.i32 %tag 5)
+      (then
+        (print "(")
+        (call $cg_emit_expr (load.field %n "left"))
+        (call $cg_emit_op (load.field %n "str1"))
+        (call $cg_emit_expr (load.field %n "right"))
+        (print ")")
+        (return))
+      (else))
+    ;; 6: unary-op
+    (if (eq.i32 %tag 6)
+      (then
+        (let %uop (ptr u8) (load.field %n "str1"))
+        (if (call $types.str_eq %uop "neg")
+          (then (print "(-") (call $cg_emit_expr (load.field %n "left")) (print ")"))
+          (else (if (call $types.str_eq %uop "not")
+            (then (print "(~") (call $cg_emit_expr (load.field %n "left")) (print ")"))
+            (else
+              (call $cg_emit_name %uop)
+              (print "(")
+              (call $cg_emit_expr (load.field %n "left"))
+              (print ")")))))
+        (return))
+      (else))
+    ;; 7: cmp-op
+    (if (eq.i32 %tag 7)
+      (then
+        (print "(")
+        (call $cg_emit_expr (load.field %n "left"))
+        (call $cg_emit_cmpop (load.field %n "str1"))
+        (call $cg_emit_expr (load.field %n "right"))
+        (print ")")
+        (return))
+      (else))
+    ;; 10: call
+    (if (eq.i32 %tag 10)
+      (then
+        (call $cg_emit_call_name (load.field %n "str1"))
+        (print "(")
+        (let %argc i32 (load.field %n "count"))
+        (let %argv (ptr i32) (load.field %n "children"))
+        (local mut $ci i32 0)
+        (loop $cargs
+          (if (ge.i32 $ci %argc)
+            (then (br $cargs))
+            (else
+              (if (gt.i32 $ci 0) (then (print ", ")) (else))
+              (call $cg_emit_expr (load.i32 (add.i32 %argv $ci)))
+              (set $ci (add.i32 $ci 1)))))
+        (print ")")
+        (return))
+      (else))
+    ;; 17: alloc
+    (if (eq.i32 %tag 17)
+      (then
+        (print "(")
+        (call $cg_emit_type (load.field %n "type1"))
+        (print "*)malloc(sizeof(")
+        (call $cg_emit_type (load.field %n "type1"))
+        (print ")")
+        (if (ne.i32 (load.field %n "left") -1)
+          (then (print " * ") (call $cg_emit_expr (load.field %n "left")))
+          (else))
+        (print ")")
+        (return))
+      (else))
+    ;; 19: load
+    (if (eq.i32 %tag 19)
+      (then (print "(*") (call $cg_emit_expr (load.field %n "left")) (print ")") (return))
+      (else))
+    ;; 21: load-field
+    (if (eq.i32 %tag 21)
+      (then
+        (call $cg_emit_expr (load.field %n "left"))
+        (print "->")
+        (call $cg_emit_name (load.field %n "str2"))
+        (return))
+      (else))
+    ;; 23: cast
+    (if (eq.i32 %tag 23)
+      (then
+        (print "((")
+        (call $cg_emit_type (load.field %n "type2"))
+        (print ")")
+        (call $cg_emit_expr (load.field %n "left"))
+        (print ")")
+        (return))
+      (else))
+    ;; 12: if as ternary expression (only when both branches are single expressions)
+    (if (eq.i32 %tag 12)
+      (then
+        (if (eq.i32 (load.field %n "count") 1)
+          (then
+            (if (eq.i32 (load.field %n "count2") 1)
+              (then
+                (print "(")
+                (call $cg_emit_expr (load.field %n "left"))
+                (print " ? ")
+                (call $cg_emit_expr (load.i32 (load.field %n "children")))
+                (print " : ")
+                (call $cg_emit_expr (load.i32 (load.field %n "children2")))
+                (print ")"))
+              (else (print "/* complex if expr */"))))
+          (else (print "/* complex if expr */")))
+        (return))
+      (else))
+    ;; fallback
+    (print "/* unknown expr tag=%d */" %tag))
+
+  ;; ── Codegen: emit_stmt ─────────────────────────────────────
+
+  (func $cg_emit_stmt
+    (param $aidx i32)
+    (effects io mem div)
+    (intent "Print a C statement with indentation from AST node")
+    (if (eq.i32 $aidx -1) (then (return)) (else))
+    (let %n (ptr $types.ASTNode) (call $types.ast_at $aidx))
+    (let %tag i32 (load.field %n "tag"))
+
+    ;; 25: intent
+    (if (eq.i32 %tag 25)
+      (then
+        (call $cg_emit_indent) (print "/* INTENT: %s */\n" (load.field %n "str1")) (return))
+      (else))
+
+    ;; 8: let/local
+    (if (eq.i32 %tag 8)
+      (then
+        (call $cg_emit_indent)
+        (call $cg_emit_type (load.field %n "type1"))
+        (print " ")
+        (call $cg_emit_name (load.field %n "str1"))
+        (if (ne.i32 (load.field %n "left") -1)
+          (then (print " = ") (call $cg_emit_expr (load.field %n "left")))
+          (else))
+        (print ";\n")
+        (return))
+      (else))
+
+    ;; 9: set-var
+    (if (eq.i32 %tag 9)
+      (then
+        (call $cg_emit_indent)
+        (call $cg_emit_name (load.field %n "str1"))
+        (print " = ")
+        (call $cg_emit_expr (load.field %n "left"))
+        (print ";\n")
+        (return))
+      (else))
+
+    ;; 11: return
+    (if (eq.i32 %tag 11)
+      (then
+        (call $cg_emit_indent)
+        (if (ne.i32 (load.field %n "left") -1)
+          (then (print "return ") (call $cg_emit_expr (load.field %n "left")) (print ";\n"))
+          (else (print "return;\n")))
+        (return))
+      (else))
+
+    ;; 12: if
+    (if (eq.i32 %tag 12)
+      (then
+        (call $cg_emit_indent)
+        (print "if (")
+        (call $cg_emit_expr (load.field %n "left"))
+        (print ") {\n")
+        (set $cg_indent (add.i32 $cg_indent 1))
+        (let %tc i32 (load.field %n "count"))
+        (let %tarr (ptr i32) (load.field %n "children"))
+        (local mut $ti i32 0)
+        (loop $then_stmts
+          (if (ge.i32 $ti %tc) (then (br $then_stmts))
+            (else
+              (call $cg_emit_stmt (load.i32 (add.i32 %tarr $ti)))
+              (set $ti (add.i32 $ti 1)))))
+        (set $cg_indent (sub.i32 $cg_indent 1))
+        (let %ec i32 (load.field %n "count2"))
+        (if (gt.i32 %ec 0)
+          (then
+            (call $cg_emit_indent) (print "} else {\n")
+            (set $cg_indent (add.i32 $cg_indent 1))
+            (let %earr (ptr i32) (load.field %n "children2"))
+            (local mut $ei i32 0)
+            (loop $else_stmts
+              (if (ge.i32 $ei %ec) (then (br $else_stmts))
+                (else
+                  (call $cg_emit_stmt (load.i32 (add.i32 %earr $ei)))
+                  (set $ei (add.i32 $ei 1)))))
+            (set $cg_indent (sub.i32 $cg_indent 1)))
+          (else))
+        (call $cg_emit_indent) (print "}\n")
+        (return))
+      (else))
+
+    ;; 13: loop
+    (if (eq.i32 %tag 13)
+      (then
+        (let %lid i32 (call $cg_fresh_label))
+        (let %lname (ptr u8) (load.field %n "str1"))
+        (if (ne.i32 %lname 0)
+          (then (call $cg_push_loop %lname %lid))
+          (else))
+        (call $cg_emit_indent) (print "while (1) {\n")
+        (set $cg_indent (add.i32 $cg_indent 1))
+        (let %lc i32 (load.field %n "count"))
+        (let %larr (ptr i32) (load.field %n "children"))
+        (local mut $li i32 0)
+        (loop $loop_body
+          (if (ge.i32 $li %lc) (then (br $loop_body))
+            (else
+              (call $cg_emit_stmt (load.i32 (add.i32 %larr $li)))
+              (set $li (add.i32 $li 1)))))
+        (set $cg_indent (sub.i32 $cg_indent 1))
+        (call $cg_emit_indent) (print "}\n")
+        (call $cg_emit_indent) (print "__break_%d:;\n" %lid)
+        (return))
+      (else))
+
+    ;; 14: block
+    (if (eq.i32 %tag 14)
+      (then
+        (call $cg_emit_indent) (print "{\n")
+        (set $cg_indent (add.i32 $cg_indent 1))
+        (let %bc i32 (load.field %n "count"))
+        (let %barr (ptr i32) (load.field %n "children"))
+        (local mut $bi i32 0)
+        (loop $blk
+          (if (ge.i32 $bi %bc) (then (br $blk))
+            (else
+              (call $cg_emit_stmt (load.i32 (add.i32 %barr $bi)))
+              (set $bi (add.i32 $bi 1)))))
+        (set $cg_indent (sub.i32 $cg_indent 1))
+        (call $cg_emit_indent) (print "}\n")
+        (return))
+      (else))
+
+    ;; 15: branch (br)
+    (if (eq.i32 %tag 15)
+      (then (call $cg_emit_indent) (print "break;\n") (return))
+      (else))
+
+    ;; 16: branch-if
+    (if (eq.i32 %tag 16)
+      (then
+        (call $cg_emit_indent)
+        (print "if (")
+        (call $cg_emit_expr (load.field %n "left"))
+        (print ") break;\n")
+        (return))
+      (else))
+
+    ;; 18: free
+    (if (eq.i32 %tag 18)
+      (then
+        (call $cg_emit_indent)
+        (print "free(")
+        (call $cg_emit_expr (load.field %n "left"))
+        (print ");\n")
+        (return))
+      (else))
+
+    ;; 20: store
+    (if (eq.i32 %tag 20)
+      (then
+        (call $cg_emit_indent)
+        (print "*")
+        (call $cg_emit_expr (load.field %n "left"))
+        (print " = ")
+        (call $cg_emit_expr (load.field %n "right"))
+        (print ";\n")
+        (return))
+      (else))
+
+    ;; 22: store-field
+    (if (eq.i32 %tag 22)
+      (then
+        (call $cg_emit_indent)
+        (call $cg_emit_expr (load.field %n "left"))
+        (print "->")
+        (call $cg_emit_name (load.field %n "str2"))
+        (print " = ")
+        (call $cg_emit_expr (load.field %n "right"))
+        (print ";\n")
+        (return))
+      (else))
+
+    ;; 24: print -> printf
+    (if (eq.i32 %tag 24)
+      (then
+        (call $cg_emit_indent)
+        (print "printf(%c" 34)
+        (call $cg_emit_escaped_str (load.field %n "str1"))
+        (print "%c" 34)
+        (let %pc i32 (load.field %n "count"))
+        (if (gt.i32 %pc 0)
+          (then
+            (let %parr (ptr i32) (load.field %n "children"))
+            (local mut $pi i32 0)
+            (loop $pargs
+              (if (ge.i32 $pi %pc) (then (br $pargs))
+                (else
+                  (print ", ")
+                  (call $cg_emit_expr (load.i32 (add.i32 %parr $pi)))
+                  (set $pi (add.i32 $pi 1))))))
+          (else))
+        (print ");\n")
+        (return))
+      (else))
+
+    ;; 26: seq
+    (if (eq.i32 %tag 26)
+      (then
+        (let %sc i32 (load.field %n "count"))
+        (let %sarr (ptr i32) (load.field %n "children"))
+        (local mut $si i32 0)
+        (loop $seqloop
+          (if (ge.i32 $si %sc) (then (br $seqloop))
+            (else
+              (call $cg_emit_stmt (load.i32 (add.i32 %sarr $si)))
+              (set $si (add.i32 $si 1)))))
+        (return))
+      (else))
+
+    ;; 10: call as statement
+    (if (eq.i32 %tag 10)
+      (then
+        (call $cg_emit_indent)
+        (call $cg_emit_expr $aidx)
+        (print ";\n")
+        (return))
+      (else))
+
+    ;; fallback: emit as expression statement
+    (call $cg_emit_indent)
+    (call $cg_emit_expr $aidx)
+    (print ";\n"))
+
+  ;; ── Codegen: top-level emitters ────────────────────────────
+
+  (func $cg_emit_struct
+    (param $aidx i32)
+    (effects io mem div)
+    (intent "Emit a typedef struct with fields")
+    (let %n (ptr $types.ASTNode) (call $types.ast_at $aidx))
+    (let %tidx i32 (load.field %n "type1"))
+    (if (eq.i32 %tidx -1) (then (return)) (else))
+    (let %t (ptr $types.TypeInfo) (call $types.type_at %tidx))
+    (let %kind i32 (load.field %t "kind"))
+    (if (ne.i32 %kind 4)
+      (then
+        ;; Type alias: typedef TYPE NAME;
+        (print "typedef ")
+        (call $cg_emit_type %tidx)
+        (print " ")
+        (call $cg_emit_name (load.field %n "str1"))
+        (print ";\n\n")
+        (return))
+      (else))
+    ;; Struct
+    (print "typedef struct ")
+    (call $cg_emit_name (load.field %n "str1"))
+    (print " {\n")
+    (let %fc i32 (load.field %t "field_count"))
+    (let %fs i32 (load.field %t "field_start"))
+    (local mut $fi i32 0)
+    (loop $fields
+      (if (ge.i32 $fi %fc) (then (br $fields))
+        (else
+          (let %fld (ptr $types.FieldInfo) (call $types.field_at (add.i32 %fs $fi)))
+          (print "    ")
+          (call $cg_emit_type (load.field %fld "type_idx"))
+          (print " ")
+          (call $cg_emit_name (load.field %fld "name"))
+          (print ";\n")
+          (set $fi (add.i32 $fi 1)))))
+    (print "} ")
+    (call $cg_emit_name (load.field %n "str1"))
+    (print ";\n\n"))
+
+  (func $cg_has_ptr_param
+    (param $aidx i32)
+    (result i32)
+    (effects mem div)
+    (intent "Check if a function has any pointer-type parameters")
+    (let %fn (ptr $types.ASTNode) (call $types.ast_at $aidx))
+    (let %pc i32 (cast i64 i32 (load.field %fn "int1")))
+    (let %arr (ptr i32) (load.field %fn "children"))
+    (local mut $i i32 0)
+    (loop $scan
+      (if (ge.i32 $i %pc) (then (br $scan))
+        (else
+          (let %pidx i32 (load.i32 (add.i32 %arr $i)))
+          (let %pn (ptr $types.ASTNode) (call $types.ast_at %pidx))
+          (let %ptidx i32 (load.field %pn "type1"))
+          (if (ne.i32 %ptidx -1)
+            (then
+              (let %pt (ptr $types.TypeInfo) (call $types.type_at %ptidx))
+              (if (eq.i32 (load.field %pt "kind") 1)
+                (then (return 1))
+                (else)))
+            (else))
+          (set $i (add.i32 $i 1)))))
+    (return 0))
+
+  (func $cg_returns_ptr
+    (param $aidx i32)
+    (result i32)
+    (effects mem)
+    (intent "Check if a function returns a pointer type")
+    (let %fn (ptr $types.ASTNode) (call $types.ast_at $aidx))
+    (let %rtidx i32 (load.field %fn "type1"))
+    (if (eq.i32 %rtidx -1) (then (return 0)) (else))
+    (let %rt (ptr $types.TypeInfo) (call $types.type_at %rtidx))
+    (return (eq.i32 (load.field %rt "kind") 1)))
+
+  (func $cg_emit_attr
+    (param $aidx i32)
+    (effects io mem div)
+    (intent "Emit __attribute__ for function based on effects and param/return types")
+    (let %fn (ptr $types.ASTNode) (call $types.ast_at $aidx))
+    (let %eff i32 (load.field %fn "bool1"))
+    ;; pure + no ptr params -> const
+    (if (ne.i32 (and.i32 %eff 1) 0)
+      (then
+        (if (eq.i32 (call $cg_has_ptr_param $aidx) 0)
+          (then (print "__attribute__((const)) "))
+          (else (print "__attribute__((pure)) ")))
+        (return))
+      (else))
+    ;; mem + returns ptr -> malloc
+    (if (ne.i32 (and.i32 %eff 2) 0)
+      (then
+        (if (ne.i32 (call $cg_returns_ptr $aidx) 0)
+          (then (print "__attribute__((malloc)) ") (return))
+          (else)))
+      (else)))
+
+  (func $cg_emit_func_sig
+    (param $aidx i32)
+    (param $use_alt_name i32)
+    (effects io mem div)
+    (intent "Print function signature: rettype name(params)")
+    (let %fn (ptr $types.ASTNode) (call $types.ast_at $aidx))
+    (call $cg_emit_type (load.field %fn "type1"))
+    (print " ")
+    (if (ne.i32 $use_alt_name 0)
+      (then (print "aria_main"))
+      (else (call $cg_emit_name (load.field %fn "str1"))))
+    (print "(")
+    (let %pc i32 (cast i64 i32 (load.field %fn "int1")))
+    (if (eq.i32 %pc 0)
+      (then (print "void"))
+      (else
+        (let %arr (ptr i32) (load.field %fn "children"))
+        (local mut $pi i32 0)
+        (loop $params
+          (if (ge.i32 $pi %pc) (then (br $params))
+            (else
+              (if (gt.i32 $pi 0) (then (print ", ")) (else))
+              (let %pidx i32 (load.i32 (add.i32 %arr $pi)))
+              (let %pn (ptr $types.ASTNode) (call $types.ast_at %pidx))
+              (call $cg_emit_type (load.field %pn "type1"))
+              (print " ")
+              (call $cg_emit_name (load.field %pn "str1"))
+              (set $pi (add.i32 $pi 1)))))))
+    (print ")"))
+
+  (func $cg_emit_function
+    (param $aidx i32)
+    (param $use_alt_name i32)
+    (effects io mem div)
+    (intent "Emit a complete C function definition")
+    (let %fn (ptr $types.ASTNode) (call $types.ast_at $aidx))
+    ;; Intent comment
+    (if (ne.i32 (load.field %fn "str2") 0)
+      (then (print "/* %s */\n" (load.field %fn "str2")))
+      (else))
+    ;; Effects comment
+    (let %eff i32 (load.field %fn "bool1"))
+    (if (gt.i32 %eff 0)
+      (then
+        (print "/* effects:")
+        (if (ne.i32 (and.i32 %eff 1) 0) (then (print " pure")) (else))
+        (if (ne.i32 (and.i32 %eff 2) 0) (then (print " mem")) (else))
+        (if (ne.i32 (and.i32 %eff 4) 0) (then (print " io")) (else))
+        (if (ne.i32 (and.i32 %eff 8) 0) (then (print " div")) (else))
+        (print " */\n"))
+      (else))
+    ;; Attribute + signature + body
+    (call $cg_emit_attr $aidx)
+    (call $cg_emit_func_sig $aidx $use_alt_name)
+    (print " {\n")
+    (set $cg_indent (add.i32 $cg_indent 1))
+    ;; Body: children[param_count..]
+    (let %pc i32 (cast i64 i32 (load.field %fn "int1")))
+    (let %total i32 (load.field %fn "count"))
+    (let %arr (ptr i32) (load.field %fn "children"))
+    (local mut $bi i32 %pc)
+    (loop $body
+      (if (ge.i32 $bi %total) (then (br $body))
+        (else
+          (call $cg_emit_stmt (load.i32 (add.i32 %arr $bi)))
+          (set $bi (add.i32 $bi 1)))))
+    (set $cg_indent (sub.i32 $cg_indent 1))
+    (print "}\n\n"))
+
+  (func $cg_emit_extern_impl
+    (param $aidx i32)
+    (effects io mem div)
+    (intent "Emit inline C implementation for a known extern function")
+    (let %en (ptr $types.ASTNode) (call $types.ast_at $aidx))
+    (let %mod (ptr u8) (load.field %en "str2"))
+    (let %name (ptr u8) (load.field %en "str1"))
+
+    ;; sys $trap
+    (if (call $types.str_eq %name "$trap")
+      (then
+        (print "void trap(uint8_t* msg) {\n")
+        (print "    fprintf(stderr, \"TRAP: %%s\\n\", (const char*)msg);\n")
+        (print "    exit(1);\n")
+        (print "}\n\n")
+        (return))
+      (else))
+    ;; sys $str_len
+    (if (call $types.str_eq %name "$str_len")
+      (then
+        (print "int32_t str_len(uint8_t* s) {\n")
+        (print "    return (int32_t)strlen((const char*)s);\n")
+        (print "}\n\n")
+        (return))
+      (else))
+    ;; sys $str_eq
+    (if (call $types.str_eq %name "$str_eq")
+      (then
+        (print "int32_t str_eq(uint8_t* a, uint8_t* b) {\n")
+        (print "    return strcmp((const char*)a, (const char*)b) == 0 ? 1 : 0;\n")
+        (print "}\n\n")
+        (return))
+      (else))
+    ;; sys $args_count
+    (if (call $types.str_eq %name "$args_count")
+      (then
+        (print "static int __aria_argc = 0;\n")
+        (print "static char** __aria_argv = 0;\n")
+        (print "int32_t args_count(void) {\n")
+        (print "    return (int32_t)__aria_argc;\n")
+        (print "}\n\n")
+        (set $cg_has_args 1)
+        (return))
+      (else))
+    ;; sys $args_get
+    (if (call $types.str_eq %name "$args_get")
+      (then
+        (print "uint8_t* args_get(int32_t i) {\n")
+        (print "    return (uint8_t*)__aria_argv[i];\n")
+        (print "}\n\n")
+        (return))
+      (else))
+    ;; io $file_read_all
+    (if (call $types.str_eq %name "$file_read_all")
+      (then
+        (print "uint8_t* file_read_all(uint8_t* path) {\n")
+        (print "    FILE* f = fopen((const char*)path, \"rb\");\n")
+        (print "    if (!f) { fprintf(stderr, \"Error: cannot read '%%s'\\n\", path); exit(1); }\n")
+        (print "    fseek(f, 0, SEEK_END);\n")
+        (print "    long len = ftell(f);\n")
+        (print "    fseek(f, 0, SEEK_SET);\n")
+        (print "    uint8_t* buf = (uint8_t*)malloc(len + 1);\n")
+        (print "    fread(buf, 1, len, f);\n")
+        (print "    buf[len] = 0;\n")
+        (print "    fclose(f);\n")
+        (print "    return buf;\n")
+        (print "}\n\n")
+        (return))
+      (else))
+    ;; io $file_write
+    (if (call $types.str_eq %name "$file_write")
+      (then
+        (print "void file_write(uint8_t* path, uint8_t* content) {\n")
+        (print "    FILE* f = fopen((const char*)path, \"wb\");\n")
+        (print "    if (!f) { fprintf(stderr, \"Error: cannot write '%%s'\\n\", path); exit(1); }\n")
+        (print "    fputs((const char*)content, f);\n")
+        (print "    fclose(f);\n")
+        (print "}\n\n")
+        (return))
+      (else))
+    ;; io $stdout_to_file
+    (if (call $types.str_eq %name "$stdout_to_file")
+      (then
+        (print "static int __saved_stdout_fd = -1;\n")
+        (print "void stdout_to_file(uint8_t* path) {\n")
+        (print "    fflush(stdout);\n")
+        (print "    __saved_stdout_fd = dup(STDOUT_FILENO);\n")
+        (print "    freopen((const char*)path, \"w\", stdout);\n")
+        (print "}\n\n")
+        (return))
+      (else))
+    ;; io $stdout_restore
+    (if (call $types.str_eq %name "$stdout_restore")
+      (then
+        (print "void stdout_restore(void) {\n")
+        (print "    fflush(stdout);\n")
+        (print "    dup2(__saved_stdout_fd, STDOUT_FILENO);\n")
+        (print "    close(__saved_stdout_fd);\n")
+        (print "    __saved_stdout_fd = -1;\n")
+        (print "}\n\n")
+        (return))
+      (else))
+    ;; sys $system
+    (if (call $types.str_eq %name "$system")
+      (then
+        (print "int32_t aria_system(uint8_t* cmd) {\n")
+        (print "    return system((const char*)cmd);\n")
+        (print "}\n\n")
+        (return))
+      (else)))
+
+  ;; ── Multi-module codegen ───────────────────────────────────
+
+  (func $cg_emit_prefixed_name
+    (param $mod_name (ptr u8))
+    (param $sym_name (ptr u8))
+    (effects io mem div)
+    (intent "Emit module__symbol C name")
+    (call $cg_emit_name $mod_name)
+    (print "__")
+    (call $cg_emit_name $sym_name))
+
+  (func $cg_emit_mod_func_sig
+    (param $mod_name (ptr u8))
+    (param $aidx i32)
+    (param $is_main i32)
+    (effects io mem div)
+    (intent "Emit function signature with module prefix")
+    (let %fn (ptr $types.ASTNode) (call $types.ast_at $aidx))
+    (call $cg_emit_type (load.field %fn "type1"))
+    (print " ")
+    (if (ne.i32 $is_main 0)
+      (then (print "aria_main"))
+      (else (call $cg_emit_prefixed_name $mod_name (load.field %fn "str1"))))
+    (print "(")
+    (let %pc i32 (cast i64 i32 (load.field %fn "int1")))
+    (if (eq.i32 %pc 0)
+      (then (print "void"))
+      (else
+        (let %arr (ptr i32) (load.field %fn "children"))
+        (local mut $pi i32 0)
+        (loop $params
+          (if (ge.i32 $pi %pc) (then (br $params))
+            (else
+              (if (gt.i32 $pi 0) (then (print ", ")) (else))
+              (let %pidx i32 (load.i32 (add.i32 %arr $pi)))
+              (let %pn (ptr $types.ASTNode) (call $types.ast_at %pidx))
+              (call $cg_emit_type (load.field %pn "type1"))
+              (print " ")
+              (call $cg_emit_name (load.field %pn "str1"))
+              (set $pi (add.i32 $pi 1)))))))
+    (print ")"))
+
+  (func $cg_emit_call_name
+    (param $name (ptr u8))
+    (effects io mem div)
+    (intent "Emit a function call name, resolving qualified names to module__func or bare for externs")
+    ;; Check if qualified ($mod.func) using pre-allocated buffers
+    (let %is_qual i32 (call $types.split_qualified_name $name $cg_qbuf_mod $cg_qbuf_func))
+    (if (ne.i32 %is_qual 0)
+      (then
+        (let %mn (ptr u8) (load.i32 $cg_qbuf_mod))
+        (let %fn (ptr u8) (load.i32 $cg_qbuf_func))
+        ;; Check if target is a regular function (tag 28) via resolve
+        (let %resolved i32 (call $types.resolve_qualified_fn $name 0))
+        (if (ge.i32 %resolved 0)
+          (then
+            ;; Regular function: emit mod__func
+            (print "%s__" %mn)
+            (call $cg_emit_name %fn))
+          (else
+            ;; Extern or not found: emit bare function name
+            (call $cg_emit_name %fn)))
+        (return))
+      (else))
+    ;; Unqualified: prefix with current module if we're in multi-module mode
+    ;; BUT only if the name is a regular function (tag 28) in the current module
+    ;; Externs (tag 32) should not be prefixed
+    (if (ne.i32 (call $types.get_cg_current_mod) 0)
+      (then
+        ;; Check if this is a function in the current module
+        (let %cur_mod_idx i32 (call $types.find_module_by_name (call $types.get_cg_current_mod)))
+        (if (ne.i32 %cur_mod_idx -1)
+          (then
+            (let %cur_ast i32 (call $types.get_mod_asts %cur_mod_idx))
+            (let %cur_mn (ptr $types.ASTNode) (call $types.ast_at %cur_ast))
+            (let %cur_total i32 (load.field %cur_mn "count"))
+            (let %cur_arr (ptr i32) (load.field %cur_mn "children"))
+            (local mut $is_local_func i32 0)
+            (local mut $fi i32 0)
+            (loop $find_func
+              (if (ge.i32 $fi %cur_total) (then (br $find_func))
+                (else
+                  (let %fidx i32 (load.i32 (add.i32 %cur_arr $fi)))
+                  (let %ffn (ptr $types.ASTNode) (call $types.ast_at %fidx))
+                  (if (eq.i32 (load.field %ffn "tag") 28)
+                    (then
+                      (if (call $types.str_eq (load.field %ffn "str1") $name)
+                        (then (set $is_local_func 1) (br $find_func))
+                        (else)))
+                    (else))
+                  (set $fi (add.i32 $fi 1)))))
+            (if $is_local_func
+              (then (call $cg_emit_prefixed_name (call $types.get_cg_current_mod) $name))
+              (else (call $cg_emit_name $name))))
+          (else (call $cg_emit_name $name))))
+      (else (call $cg_emit_name $name))))
+
+  (func $cg_emit_all_modules
+    (effects io mem div)
+    (intent "Emit all loaded modules as a single C file")
+
+    ;; Phase 1: Header + includes
+    (print "/* Generated by ariac (multi-module) */\n")
+    (print "#include <stdio.h>\n")
+    (print "#include <stdlib.h>\n")
+    (print "#include <stdint.h>\n")
+    (print "#include <stdbool.h>\n")
+    (print "#include <math.h>\n")
+    (print "#include <string.h>\n")
+    (print "#include <unistd.h>\n\n")
+
+    ;; Phase 2: Forward struct declarations (all modules)
+    (local mut $mi i32 0)
+    (loop $fwd_structs
+      (if (ge.i32 $mi (call $types.get_mod_pos)) (then (br $fwd_structs))
+        (else
+          (let %ast_idx i32 (call $types.get_mod_asts $mi))
+          (let %mn (ptr $types.ASTNode) (call $types.ast_at %ast_idx))
+          (let %mod_name (ptr u8) (load.field %mn "str1"))
+          (let %total i32 (load.field %mn "count"))
+          (let %arr (ptr i32) (load.field %mn "children"))
+          (local mut $ci i32 0)
+          (loop $fwd
+            (if (ge.i32 $ci %total) (then (br $fwd))
+              (else
+                (let %idx i32 (load.i32 (add.i32 %arr $ci)))
+                (let %cn (ptr $types.ASTNode) (call $types.ast_at %idx))
+                (if (eq.i32 (load.field %cn "tag") 30)
+                  (then
+                    (let %tdx i32 (load.field %cn "type1"))
+                    (if (ne.i32 %tdx -1)
+                      (then
+                        (let %tt (ptr $types.TypeInfo) (call $types.type_at %tdx))
+                        (if (eq.i32 (load.field %tt "kind") 4)
+                          (then
+                            (print "typedef struct ")
+                            (call $cg_emit_name (load.field %cn "str1"))
+                            (print " ")
+                            (call $cg_emit_name (load.field %cn "str1"))
+                            (print ";\n"))
+                          (else)))
+                      (else)))
+                  (else))
+                (set $ci (add.i32 $ci 1)))))
+          (set $mi (add.i32 $mi 1)))))
+    (print "\n")
+
+    ;; Phase 3: Extern implementations (from first module that has them, dedup by name)
+    (set $mi 0)
+    (loop $ext_phase
+      (if (ge.i32 $mi (call $types.get_mod_pos)) (then (br $ext_phase))
+        (else
+          (let %ast_idx i32 (call $types.get_mod_asts $mi))
+          (let %mn (ptr $types.ASTNode) (call $types.ast_at %ast_idx))
+          (let %c2 i32 (load.field %mn "count2"))
+          (let %arr2 (ptr i32) (load.field %mn "children2"))
+          (local mut $ei i32 0)
+          (loop $externs
+            (if (ge.i32 $ei %c2) (then (br $externs))
+              (else
+                (let %eidx i32 (load.i32 (add.i32 %arr2 $ei)))
+                (let %en (ptr $types.ASTNode) (call $types.ast_at %eidx))
+                (if (eq.i32 (load.field %en "tag") 32)
+                  (then (call $cg_emit_extern_impl %eidx))
+                  (else))
+                (set $ei (add.i32 $ei 1)))))
+          (set $mi (add.i32 $mi 1)))))
+
+    ;; Phase 4: Struct definitions (all modules, prefixed)
+    (set $mi 0)
+    (loop $struct_phase
+      (if (ge.i32 $mi (call $types.get_mod_pos)) (then (br $struct_phase))
+        (else
+          (let %ast_idx i32 (call $types.get_mod_asts $mi))
+          (let %mn (ptr $types.ASTNode) (call $types.ast_at %ast_idx))
+          (let %total i32 (load.field %mn "count"))
+          (let %arr (ptr i32) (load.field %mn "children"))
+          (local mut $ci i32 0)
+          (loop $structs
+            (if (ge.i32 $ci %total) (then (br $structs))
+              (else
+                (let %idx i32 (load.i32 (add.i32 %arr $ci)))
+                (let %cn (ptr $types.ASTNode) (call $types.ast_at %idx))
+                (if (eq.i32 (load.field %cn "tag") 30)
+                  (then (call $cg_emit_struct %idx))
+                  (else))
+                (set $ci (add.i32 $ci 1)))))
+          (set $mi (add.i32 $mi 1)))))
+
+    ;; Phase 5: Forward function declarations (all modules, prefixed)
+    (set $mi 0)
+    (loop $fwd_func_phase
+      (if (ge.i32 $mi (call $types.get_mod_pos)) (then (br $fwd_func_phase))
+        (else
+          (let %ast_idx i32 (call $types.get_mod_asts $mi))
+          (let %mn (ptr $types.ASTNode) (call $types.ast_at %ast_idx))
+          (let %mod_name (ptr u8) (load.field %mn "str1"))
+          (let %total i32 (load.field %mn "count"))
+          (let %arr (ptr i32) (load.field %mn "children"))
+          (local mut $ci i32 0)
+          (loop $fwd_funcs
+            (if (ge.i32 $ci %total) (then (br $fwd_funcs))
+              (else
+                (let %idx i32 (load.i32 (add.i32 %arr $ci)))
+                (let %cn (ptr $types.ASTNode) (call $types.ast_at %idx))
+                (if (eq.i32 (load.field %cn "tag") 28)
+                  (then
+                    (local mut $is_main_fwd i32 0)
+                    (if (ne.i32 $cg_has_args 0)
+                      (then
+                        (if (call $types.str_eq (load.field %cn "str1") "$main")
+                          (then (set $is_main_fwd 1))
+                          (else)))
+                      (else))
+                    (call $cg_emit_attr %idx)
+                    (call $cg_emit_mod_func_sig %mod_name %idx $is_main_fwd)
+                    (print ";\n"))
+                  (else))
+                (set $ci (add.i32 $ci 1)))))
+          (set $mi (add.i32 $mi 1)))))
+    (print "\n")
+
+    ;; Phase 6: Globals (all modules, unprefixed — globals are unique by convention)
+    (set $mi 0)
+    (loop $globals_phase
+      (if (ge.i32 $mi (call $types.get_mod_pos)) (then (br $globals_phase))
+        (else
+          (let %ast_idx i32 (call $types.get_mod_asts $mi))
+          (let %mn (ptr $types.ASTNode) (call $types.ast_at %ast_idx))
+          (let %mod_name (ptr u8) (load.field %mn "str1"))
+          (let %total i32 (load.field %mn "count"))
+          (let %arr (ptr i32) (load.field %mn "children"))
+          (local mut $ci i32 0)
+          (loop $globals
+            (if (ge.i32 $ci %total) (then (br $globals))
+              (else
+                (let %idx i32 (load.i32 (add.i32 %arr $ci)))
+                (let %cn (ptr $types.ASTNode) (call $types.ast_at %idx))
+                (if (eq.i32 (load.field %cn "tag") 29)
+                  (then
+                    (call $cg_emit_type (load.field %cn "type1"))
+                    (print " ")
+                    (call $cg_emit_name (load.field %cn "str1"))
+                    (if (ne.i32 (load.field %cn "left") -1)
+                      (then (print " = ") (call $cg_emit_expr (load.field %cn "left")))
+                      (else))
+                    (print ";\n"))
+                  (else))
+                (set $ci (add.i32 $ci 1)))))
+          (set $mi (add.i32 $mi 1)))))
+    (print "\n")
+
+    ;; Phase 7: Function bodies (all modules, prefixed)
+    (set $mi 0)
+    (loop $func_phase
+      (if (ge.i32 $mi (call $types.get_mod_pos)) (then (br $func_phase))
+        (else
+          (let %ast_idx i32 (call $types.get_mod_asts $mi))
+          (let %mn (ptr $types.ASTNode) (call $types.ast_at %ast_idx))
+          (let %mod_name (ptr u8) (load.field %mn "str1"))
+          (call $types.set_cg_current_mod %mod_name)
+          (let %total i32 (load.field %mn "count"))
+          (let %arr (ptr i32) (load.field %mn "children"))
+          (local mut $ci i32 0)
+          (loop $funcs
+            (if (ge.i32 $ci %total) (then (br $funcs))
+              (else
+                (let %idx i32 (load.i32 (add.i32 %arr $ci)))
+                (let %cn (ptr $types.ASTNode) (call $types.ast_at %idx))
+                (if (eq.i32 (load.field %cn "tag") 28)
+                  (then
+                    (let %fn_node (ptr $types.ASTNode) (call $types.ast_at %idx))
+                    ;; Intent comment
+                    (if (ne.i32 (load.field %fn_node "str2") 0)
+                      (then (print "/* %s */\n" (load.field %fn_node "str2")))
+                      (else))
+                    ;; Effects comment
+                    (let %eff i32 (load.field %fn_node "bool1"))
+                    (if (gt.i32 %eff 0)
+                      (then
+                        (print "/* effects:")
+                        (if (ne.i32 (and.i32 %eff 1) 0) (then (print " pure")) (else))
+                        (if (ne.i32 (and.i32 %eff 2) 0) (then (print " mem")) (else))
+                        (if (ne.i32 (and.i32 %eff 4) 0) (then (print " io")) (else))
+                        (if (ne.i32 (and.i32 %eff 8) 0) (then (print " div")) (else))
+                        (print " */\n"))
+                      (else))
+                    ;; Attribute + signature
+                    (local mut $is_main_body i32 0)
+                    (if (ne.i32 $cg_has_args 0)
+                      (then
+                        (if (call $types.str_eq (load.field %fn_node "str1") "$main")
+                          (then (set $is_main_body 1))
+                          (else)))
+                      (else))
+                    (call $cg_emit_attr %idx)
+                    (call $cg_emit_mod_func_sig %mod_name %idx $is_main_body)
+                    (print " {\n")
+                    (set $cg_indent 1)
+                    ;; Body
+                    (let %pc i32 (cast i64 i32 (load.field %fn_node "int1")))
+                    (let %total_c i32 (load.field %fn_node "count"))
+                    (let %fn_arr (ptr i32) (load.field %fn_node "children"))
+                    (local mut $bi i32 %pc)
+                    (loop $body
+                      (if (ge.i32 $bi %total_c) (then (br $body))
+                        (else
+                          (call $cg_emit_stmt (load.i32 (add.i32 %fn_arr $bi)))
+                          (set $bi (add.i32 $bi 1)))))
+                    (set $cg_indent 0)
+                    (print "}\n\n"))
+                  (else))
+                (set $ci (add.i32 $ci 1)))))
+          (set $mi (add.i32 $mi 1)))))
+
+    ;; Phase 8: Main wrapper — call entry module's $main
+    (let %entry_ast i32 (call $types.get_mod_asts 0))
+    (let %entry_mn (ptr $types.ASTNode) (call $types.ast_at %entry_ast))
+    (let %entry_name (ptr u8) (load.field %entry_mn "str1"))
+    (if (ne.i32 $cg_has_args 0)
+      (then
+        (print "int main(int argc, char** argv) {\n")
+        (print "    __aria_argc = argc;\n")
+        (print "    __aria_argv = argv;\n")
+        (print "    return aria_main();\n}\n"))
+      (else
+        (print "int main(void) { return ")
+        (call $cg_emit_prefixed_name %entry_name "$main")
+        (print "(); }\n")))
+
+    (call $types.set_cg_current_mod 0))
+
+  (func $cg_emit_module
+    (param $mod_aidx i32)
+    (effects io mem div)
+    (intent "Emit a complete C99 source file from a module AST node")
+    (let %mn (ptr $types.ASTNode) (call $types.ast_at $mod_aidx))
+    (let %total i32 (load.field %mn "count"))
+    (let %arr (ptr i32) (load.field %mn "children"))
+    (let %c2_count i32 (load.field %mn "count2"))
+    (let %arr2 (ptr i32) (load.field %mn "children2"))
+
+    ;; Phase 1: Header + includes
+    (print "/* Generated from ARIA module: %s */\n" (load.field %mn "str1"))
+    (print "#include <stdio.h>\n")
+    (print "#include <stdlib.h>\n")
+    (print "#include <stdint.h>\n")
+    (print "#include <stdbool.h>\n")
+    (print "#include <math.h>\n")
+    (print "#include <string.h>\n")
+    (print "#include <unistd.h>\n\n")
+
+    ;; Phase 2: Forward struct declarations
+    (local mut $ci i32 0)
+    (loop $fwd_structs
+      (if (ge.i32 $ci %total) (then (br $fwd_structs))
+        (else
+          (let %idx i32 (load.i32 (add.i32 %arr $ci)))
+          (let %cn (ptr $types.ASTNode) (call $types.ast_at %idx))
+          (if (eq.i32 (load.field %cn "tag") 30)
+            (then
+              (let %tdx i32 (load.field %cn "type1"))
+              (if (ne.i32 %tdx -1)
+                (then
+                  (let %tt (ptr $types.TypeInfo) (call $types.type_at %tdx))
+                  (if (eq.i32 (load.field %tt "kind") 4)
+                    (then
+                      (print "typedef struct ")
+                      (call $cg_emit_name (load.field %cn "str1"))
+                      (print " ")
+                      (call $cg_emit_name (load.field %cn "str1"))
+                      (print ";\n"))
+                    (else)))
+                (else)))
+            (else))
+          (set $ci (add.i32 $ci 1)))))
+    (print "\n")
+
+    ;; Phase 3: Extern implementations
+    (local mut $ei i32 0)
+    (loop $externs
+      (if (ge.i32 $ei %c2_count) (then (br $externs))
+        (else
+          (let %eidx i32 (load.i32 (add.i32 %arr2 $ei)))
+          (let %en (ptr $types.ASTNode) (call $types.ast_at %eidx))
+          (if (eq.i32 (load.field %en "tag") 32)
+            (then (call $cg_emit_extern_impl %eidx))
+            (else))
+          (set $ei (add.i32 $ei 1)))))
+
+    ;; Phase 4: Struct definitions
+    (set $ci 0)
+    (loop $struct_defs
+      (if (ge.i32 $ci %total) (then (br $struct_defs))
+        (else
+          (let %idx2 i32 (load.i32 (add.i32 %arr $ci)))
+          (let %cn2 (ptr $types.ASTNode) (call $types.ast_at %idx2))
+          (if (eq.i32 (load.field %cn2 "tag") 30)
+            (then (call $cg_emit_struct %idx2))
+            (else))
+          (set $ci (add.i32 $ci 1)))))
+
+    ;; Phase 5: Forward function declarations
+    (set $ci 0)
+    (loop $fwd_funcs
+      (if (ge.i32 $ci %total) (then (br $fwd_funcs))
+        (else
+          (let %idx3 i32 (load.i32 (add.i32 %arr $ci)))
+          (let %cn3 (ptr $types.ASTNode) (call $types.ast_at %idx3))
+          (if (eq.i32 (load.field %cn3 "tag") 28)
+            (then
+              (call $cg_emit_attr %idx3)
+              (if (ne.i32 $cg_has_args 0)
+                (then
+                  (if (call $types.str_eq (load.field %cn3 "str1") "$main")
+                    (then (call $cg_emit_func_sig %idx3 1))
+                    (else (call $cg_emit_func_sig %idx3 0))))
+                (else (call $cg_emit_func_sig %idx3 0)))
+              (print ";\n"))
+            (else))
+          (set $ci (add.i32 $ci 1)))))
+    (print "\n")
+
+    ;; Phase 6: Globals
+    (set $ci 0)
+    (loop $globals
+      (if (ge.i32 $ci %total) (then (br $globals))
+        (else
+          (let %idx4 i32 (load.i32 (add.i32 %arr $ci)))
+          (let %cn4 (ptr $types.ASTNode) (call $types.ast_at %idx4))
+          (if (eq.i32 (load.field %cn4 "tag") 29)
+            (then
+              (call $cg_emit_type (load.field %cn4 "type1"))
+              (print " ")
+              (call $cg_emit_name (load.field %cn4 "str1"))
+              (if (ne.i32 (load.field %cn4 "left") -1)
+                (then (print " = ") (call $cg_emit_expr (load.field %cn4 "left")))
+                (else))
+              (print ";\n"))
+            (else))
+          (set $ci (add.i32 $ci 1)))))
+    (print "\n")
+
+    ;; Phase 7: Function implementations
+    (set $ci 0)
+    (loop $func_impls
+      (if (ge.i32 $ci %total) (then (br $func_impls))
+        (else
+          (let %idx5 i32 (load.i32 (add.i32 %arr $ci)))
+          (let %cn5 (ptr $types.ASTNode) (call $types.ast_at %idx5))
+          (if (eq.i32 (load.field %cn5 "tag") 28)
+            (then
+              (if (ne.i32 $cg_has_args 0)
+                (then
+                  (if (call $types.str_eq (load.field %cn5 "str1") "$main")
+                    (then (call $cg_emit_function %idx5 1))
+                    (else (call $cg_emit_function %idx5 0))))
+                (else (call $cg_emit_function %idx5 0))))
+            (else))
+          (set $ci (add.i32 $ci 1)))))
+
+    ;; Phase 8: Main wrapper (if uses args)
+    (if (ne.i32 $cg_has_args 0)
+      (then
+        (print "int main(int argc, char** argv) {\n")
+        (print "    __aria_argc = argc;\n")
+        (print "    __aria_argv = argv;\n")
+        (print "    return aria_main();\n")
+        (print "}\n"))
+      (else)))
+
+  ;; ── Exports ────────────────────────────────────────────────
+
+  (export $init_codegen)
+  (export $cg_emit_module)
+  (export $cg_emit_name)
+  (export $cg_has_args)
+  (export $cg_emit_prefixed_name)
+  (export $cg_emit_mod_func_sig)
+  (export $cg_emit_call_name)
+  (export $cg_emit_all_modules)
+  (export $cg_emit_struct)
+  (export $cg_emit_attr)
+  (export $cg_emit_extern_impl)
+  (export $cg_emit_func_sig)
+  (export $cg_emit_stmt)
+  (export $cg_emit_function)
+  (export $cg_emit_type)
+  (export $cg_emit_indent))

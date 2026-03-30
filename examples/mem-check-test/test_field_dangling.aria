@@ -1,0 +1,24 @@
+;; Test: use of freed pointer via struct field
+;; Expected: ERROR — use of freed pointer via field 'data'
+
+(module "test_field_dangling"
+  (type $Container (struct
+    (field $tag i32)
+    (field $data (ptr i32))))
+
+  (func $main
+    (result i32)
+    (effects io mem)
+    (intent "Trigger dangling pointer access through struct field")
+    (let %buf (ptr i32) (alloc i32 8))
+    (store.i32 %buf 123)
+    (let %c (ptr $Container) (alloc $Container 1))
+    (store.field %c "tag" 1)
+    (store.field %c "data" %buf)
+    ;; Free the buffer, but the field still points to it
+    (free %buf)
+    ;; Access via field — dangling pointer
+    (let %val i32 (load.i32 (load.field %c "data")))
+    (print "val = %d\n" %val)
+    (free %c)
+    (return 0)))
