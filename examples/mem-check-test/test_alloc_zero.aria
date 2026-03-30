@@ -1,0 +1,10 @@
+;; Test: alloc with zero count
+;; Expected: WARN — alloc with zero count (undefined behavior)
+
+(module "test_alloc_zero"
+  (func $main
+    (result i32) (effects mem)
+    (intent "Allocate zero elements — undefined in C")
+    (let %p (ptr i32) (alloc i32 0))
+    (free %p)
+    (return 0)))
