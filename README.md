@@ -29,6 +29,20 @@ dead code after return, dead code after branch, dead code after if where both br
 **Design limits:**
 dynamic bounds checking with fully runtime indices (partially covered via loop bound analysis and constant propagation when bounds are compile-time resolvable), general integer overflow detection with non-constant operands (requires range analysis / abstract interpretation — constant overflow IS detected).
 
+#### Safety by design: ARIA-IR vs C
+
+ARIA-IR compiles to C99 and matches its computational power, but several C constructs are intentionally absent — eliminating entire vulnerability classes by construction rather than by checking:
+
+| C construct | ARIA-IR | Why excluded |
+|---|---|---|
+| `union` | Not available | Eliminates type confusion (CWE-843). Type punning done via explicit casts instead. |
+| `void*` | Not available | All pointers are typed (`(ptr i32)`, `(ptr $Node)`). Eliminates unsafe generic pointer patterns. |
+| Stack arrays | Not available | All dynamic memory is heap-allocated via `(alloc T N)`. Eliminates dangling pointers to stack locals. |
+| `goto` | Not available | Structured control flow only (`if`/`loop`/`br`). Eliminates spaghetti control flow. |
+| Variadic functions | Not available | `print` is a built-in; user-defined variadics would undermine type safety. |
+| Threads / pthreads | Not available | Single-threaded execution. Eliminates data races, deadlocks, and TOCTOU vulnerabilities. |
+| Function pointers | Not yet available | Typed function references are a planned future addition. |
+
 ## Prerequisites
 
 - **Clojure 1.12+** (with `clojure` CLI / deps.edn)
