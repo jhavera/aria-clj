@@ -1,0 +1,13 @@
+;; Test: format string type mismatch
+;; Expected: WARN — format '%d' expects integer, got pointer
+
+(module "test_format_type"
+  (func $main
+    (result i32)
+    (effects io mem)
+    (intent "Pass a pointer to a %d format specifier")
+    (let %p (ptr i32) (alloc i32 1))
+    ;; %d expects integer, but we pass a pointer
+    (print "value: %d\n" %p)
+    (free %p)
+    (return 0)))

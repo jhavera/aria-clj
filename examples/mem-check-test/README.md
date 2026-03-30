@@ -96,3 +96,39 @@ the offset are compile-time constants.
 | File | Expected diagnostic | Description |
 |------|-------------------|-------------|
 | `test_uninit_read.aria` | `WARN: read of potentially uninitialized memory at offset on` | Reads from an allocated array offset that was never written to |
+
+### Loop leak detection
+
+| File | Expected diagnostic | Description |
+|------|-------------------|-------------|
+| `test_leak_loop.aria` | `WARN: allocation in loop body without free (leak per iteration)` | Allocates inside a loop without freeing — leaks every iteration |
+
+### Constant propagation
+
+| File | Expected diagnostic | Description |
+|------|-------------------|-------------|
+| `test_const_prop_oob.aria` | `ERROR: out-of-bounds access on` | Alloc size comes from a constant variable; offset exceeds propagated capacity |
+
+### Alloc size overflow
+
+| File | Expected diagnostic | Description |
+|------|-------------------|-------------|
+| `test_alloc_overflow.aria` | `WARN: alloc size uses multiplication (risk of integer overflow)` | Alloc count uses multiplication which could overflow i32 |
+
+### Format string type validation
+
+| File | Expected diagnostic | Description |
+|------|-------------------|-------------|
+| `test_format_type.aria` | `WARN: format '%d' expects integer, got pointer` | Passes a pointer argument to a `%d` format specifier |
+
+### Cross-function conditional free
+
+| File | Expected diagnostic | Description |
+|------|-------------------|-------------|
+| `test_crossfn_conditional.aria` | `WARN: use of potentially freed pointer` | Callee conditionally frees parameter; caller gets may-be-freed warning, not definitive error |
+
+### Global pointer state tracking
+
+| File | Expected diagnostic | Description |
+|------|-------------------|-------------|
+| `test_global_use_after_free.aria` | `ERROR: use of freed global pointer` | Function A allocates global, function B frees it, function C uses it — cross-function global use-after-free |

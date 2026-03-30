@@ -1,0 +1,25 @@
+;; Test: cross-function conditional free (callee frees param in one branch only)
+;; Expected: WARN — use of potentially freed pointer '%buf'
+
+(module "test_crossfn_conditional"
+  (func $maybe_free
+    (param $p (ptr i32))
+    (param $flag i32)
+    (effects mem)
+    (intent "Conditionally free the pointer based on flag")
+    (if (eq.i32 $flag 1)
+      (then (free $p))
+      (else)))
+
+  (func $main
+    (param $flag i32)
+    (result i32)
+    (effects io mem)
+    (intent "Call function that conditionally frees, then use the pointer")
+    (let %buf (ptr i32) (alloc i32 4))
+    (store.i32 %buf 42)
+    (call $maybe_free %buf $flag)
+    ;; %buf may or may not be freed — should warn, not error
+    (let %val i32 (load.i32 %buf))
+    (print "val = %d\n" %val)
+    (return 0)))

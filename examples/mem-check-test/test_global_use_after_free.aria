@@ -1,0 +1,32 @@
+;; Test: use of freed global pointer across functions
+;; Expected: ERROR — use of freed global pointer '$cache'
+
+(module "test_global_use_after_free"
+  (global mut $cache (ptr i32) 0)
+
+  (func $init_cache
+    (effects mem)
+    (intent "Allocate global cache")
+    (set $cache (alloc i32 16)))
+
+  (func $destroy_cache
+    (effects mem)
+    (intent "Free global cache")
+    (free $cache))
+
+  (func $use_cache
+    (result i32)
+    (effects mem io)
+    (intent "Read from global cache — may be freed")
+    (let %val i32 (load.i32 $cache))
+    (return %val))
+
+  (func $main
+    (result i32)
+    (effects io mem)
+    (intent "Trigger use of freed global pointer")
+    (call $init_cache)
+    (call $destroy_cache)
+    (let %v i32 (call $use_cache))
+    (print "val = %d\n" %v)
+    (return 0)))
