@@ -1,0 +1,18 @@
+;; Test: loop bound exceeds array capacity
+;; Expected: ERROR — loop may access out-of-bounds on '%arr'
+
+(module "test_loop_oob"
+  (func $main
+    (result i32)
+    (effects io mem div)
+    (intent "Loop iterates beyond array capacity")
+    (let %arr (ptr i32) (alloc i32 8))
+    (local mut $i i32 0)
+    (loop $fill
+      (if (ge.i32 $i 10) (then (br $fill))
+        (else
+          ;; Indices 0..9, but array only has 8 elements
+          (store.i32 (add.i32 %arr $i) $i)
+          (set $i (add.i32 $i 1)))))
+    (free %arr)
+    (return 0)))

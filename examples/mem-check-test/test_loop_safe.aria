@@ -1,0 +1,18 @@
+;; Test: loop bound matches capacity — no false positive
+;; Expected: OK — no errors, no warnings
+
+(module "test_loop_safe"
+  (func $main
+    (result i32)
+    (effects io mem div)
+    (intent "Loop iterates exactly within array bounds")
+    (let %arr (ptr i32) (alloc i32 8))
+    (local mut $i i32 0)
+    ;; Bound=8 with capacity=8 → indices 0..7, all valid
+    (loop $fill
+      (if (ge.i32 $i 8) (then (br $fill))
+        (else
+          (store.i32 (add.i32 %arr $i) (mul.i32 $i $i))
+          (set $i (add.i32 $i 1)))))
+    (free %arr)
+    (return 0)))

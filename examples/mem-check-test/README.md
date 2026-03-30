@@ -132,3 +132,11 @@ the offset are compile-time constants.
 | File | Expected diagnostic | Description |
 |------|-------------------|-------------|
 | `test_global_use_after_free.aria` | `ERROR: use of freed global pointer` | Function A allocates global, function B frees it, function C uses it — cross-function global use-after-free |
+
+### Loop bound vs array capacity analysis
+
+| File | Expected diagnostic | Description |
+|------|-------------------|-------------|
+| `test_loop_oob.aria` | `ERROR: loop may access out-of-bounds on` | Loop bound (10) exceeds array capacity (8) — detects over-iteration |
+| `test_loop_oob_offset.aria` | `ERROR: loop may access out-of-bounds on` | Loop accesses `arr[j]` and `arr[j+1]` with bound equal to capacity — the +1 offset causes OOB |
+| `test_loop_safe.aria` | No errors, no warnings | Loop bound equals capacity with simple indexing — verifies absence of false positives |

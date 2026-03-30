@@ -1354,6 +1354,8 @@
         (set $chk_in_loop (add.i32 $chk_in_loop 1))
         (call $chk_scope_enter)
         (call $check_body (load.field %n "children") (load.field %n "count"))
+        ;; Loop bound analysis
+        (call $chk_analyze_loop $aidx)
         (call $chk_scope_leave)
         (set $chk_in_loop (sub.i32 $chk_in_loop 1))
         (return -1))
@@ -2139,6 +2141,198 @@
     (intent "Infer which function params are freed, using multi-round analysis")
     (call $scan_round1)
     (call $scan_round2))
+
+  ;; ── Loop bound analysis ────────────────────────────────────
+
+  (func $chk_eval_const
+    (param $idx i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Evaluate a constant expression. Returns value or -1 if unknown")
+    (if (eq.i32 $idx -1) (then (return -1)) (else))
+    (let %n (ptr $types.ASTNode) (call $types.ast_at $idx))
+    (let %tag i32 (load.field %n "tag"))
+    ;; Int literal
+    (if (eq.i32 %tag 0) (then (return (cast i64 i32 (load.field %n "int1")))) (else))
+    ;; Var ref → known constant?
+    (if (eq.i32 %tag 4) (then (return (call $chk_sym_get_const (load.field %n "str1")))) (else))
+    ;; Binop → evaluate sub-expressions
+    (if (eq.i32 %tag 5)
+      (then
+        (let %lv i32 (call $chk_eval_const (load.field %n "left")))
+        (let %rv i32 (call $chk_eval_const (load.field %n "right")))
+        (if (eq.i32 %lv -1) (then (return -1)) (else))
+        (if (eq.i32 %rv -1) (then (return -1)) (else))
+        (if (call $types.str_eq (load.field %n "str1") "add") (then (return (add.i32 %lv %rv))) (else))
+        (if (call $types.str_eq (load.field %n "str1") "sub") (then (return (sub.i32 %lv %rv))) (else))
+        (if (call $types.str_eq (load.field %n "str1") "mul") (then (return (mul.i32 %lv %rv))) (else))
+        (return -1))
+      (else))
+    (return -1))
+
+  (func $chk_loop_check_access
+    (param $arr_idx i32)
+    (param $expr_idx i32)
+    (param $counter (ptr u8))
+    (param $max_counter i32)
+    (effects mem io div)
+    (intent "Check if (add %arr EXPR) with counter is within bounds")
+    (if (eq.i32 $arr_idx -1) (then (return)) (else))
+    (if (eq.i32 $expr_idx -1) (then (return)) (else))
+    (let %arr_n (ptr $types.ASTNode) (call $types.ast_at $arr_idx))
+    ;; Array side must be a var-ref with known capacity
+    (if (ne.i32 (load.field %arr_n "tag") 4) (then (return)) (else))
+    (let %aname (ptr u8) (load.field %arr_n "str1"))
+    (let %cap i32 (call $chk_sym_get_capacity %aname))
+    (if (eq.i32 %cap -1) (then (return)) (else))
+    ;; Counter side: direct var-ref or (add counter K)
+    (let %expr_n (ptr $types.ASTNode) (call $types.ast_at $expr_idx))
+    (if (eq.i32 (load.field %expr_n "tag") 4)
+      (then
+        ;; Direct counter reference → additional_offset = 0
+        (if (call $types.str_eq (load.field %expr_n "str1") $counter)
+          (then
+            (if (ge.i32 $max_counter %cap)
+              (then (call $chk_error2 "loop may access out-of-bounds on" %aname))
+              (else)))
+          (else)))
+      (else
+        ;; Check (add counter K) or (add K counter)
+        (if (eq.i32 (load.field %expr_n "tag") 5)
+          (then
+            (if (call $types.str_eq (load.field %expr_n "str1") "add")
+              (then
+                (let %el (ptr $types.ASTNode) (call $types.ast_at (load.field %expr_n "left")))
+                (let %er (ptr $types.ASTNode) (call $types.ast_at (load.field %expr_n "right")))
+                ;; (add $counter K)
+                (if (eq.i32 (load.field %el "tag") 4)
+                  (then
+                    (if (call $types.str_eq (load.field %el "str1") $counter)
+                      (then
+                        (let %kv i32 (call $chk_eval_const (load.field %expr_n "right")))
+                        (if (ne.i32 %kv -1)
+                          (then
+                            (if (ge.i32 (add.i32 $max_counter %kv) %cap)
+                              (then (call $chk_error2 "loop may access out-of-bounds on" %aname))
+                              (else)))
+                          (else)))
+                      (else)))
+                  (else))
+                ;; (add K $counter)
+                (if (eq.i32 (load.field %er "tag") 4)
+                  (then
+                    (if (call $types.str_eq (load.field %er "str1") $counter)
+                      (then
+                        (let %kv2 i32 (call $chk_eval_const (load.field %expr_n "left")))
+                        (if (ne.i32 %kv2 -1)
+                          (then
+                            (if (ge.i32 (add.i32 $max_counter %kv2) %cap)
+                              (then (call $chk_error2 "loop may access out-of-bounds on" %aname))
+                              (else)))
+                          (else)))
+                      (else)))
+                  (else)))
+              (else)))
+          (else)))))
+
+  (func $chk_loop_scan_children
+    (param $arr (ptr i32))
+    (param $count i32)
+    (param $counter (ptr u8))
+    (param $max_counter i32)
+    (effects mem io div)
+    (intent "Scan children array for loop bound violations")
+    (local mut $i i32 0)
+    (loop $iter
+      (if (ge.i32 $i $count) (then (br $iter))
+        (else
+          (call $chk_loop_scan_node (load.i32 (add.i32 $arr $i)) $counter $max_counter)
+          (set $i (add.i32 $i 1))))))
+
+  (func $chk_loop_scan_node
+    (param $idx i32)
+    (param $counter (ptr u8))
+    (param $max_counter i32)
+    (effects mem io div)
+    (intent "Recursively scan AST for array accesses using loop counter")
+    (if (eq.i32 $idx -1) (then (return)) (else))
+    (let %n (ptr $types.ASTNode) (call $types.ast_at $idx))
+    (let %tag i32 (load.field %n "tag"))
+    ;; Skip nested loops (they have their own analysis)
+    (if (eq.i32 %tag 13) (then (return)) (else))
+    ;; Check: if this is (add ...), test for array+counter pattern
+    (if (eq.i32 %tag 5)
+      (then
+        (if (call $types.str_eq (load.field %n "str1") "add")
+          (then
+            ;; Try left=array, right=counter_expr
+            (call $chk_loop_check_access (load.field %n "left") (load.field %n "right") $counter $max_counter)
+            ;; Try right=array, left=counter_expr
+            (call $chk_loop_check_access (load.field %n "right") (load.field %n "left") $counter $max_counter))
+          (else)))
+      (else))
+    ;; Recurse into all child locations
+    (if (ne.i32 (load.field %n "left") -1)
+      (then (call $chk_loop_scan_node (load.field %n "left") $counter $max_counter))
+      (else))
+    (if (ne.i32 (load.field %n "right") -1)
+      (then (call $chk_loop_scan_node (load.field %n "right") $counter $max_counter))
+      (else))
+    (if (gt.i32 (load.field %n "count") 0)
+      (then (call $chk_loop_scan_children (load.field %n "children") (load.field %n "count") $counter $max_counter))
+      (else))
+    (if (gt.i32 (load.field %n "count2") 0)
+      (then (call $chk_loop_scan_children (load.field %n "children2") (load.field %n "count2") $counter $max_counter))
+      (else)))
+
+  (func $chk_analyze_loop
+    (param $loop_idx i32)
+    (effects mem io div)
+    (intent "Analyze loop for out-of-bounds array access via counter variable")
+    (let %loop_n (ptr $types.ASTNode) (call $types.ast_at $loop_idx))
+    (let %label (ptr u8) (load.field %loop_n "str1"))
+    (let %body_count i32 (load.field %loop_n "count"))
+    (if (eq.i32 %body_count 0) (then (return)) (else))
+    ;; First child must be an if (tag 12)
+    (let %first_idx i32 (load.i32 (load.field %loop_n "children")))
+    (let %first (ptr $types.ASTNode) (call $types.ast_at %first_idx))
+    (if (ne.i32 (load.field %first "tag") 12) (then (return)) (else))
+    ;; Then-branch must start with (br $label)
+    (let %then_count i32 (load.field %first "count"))
+    (if (eq.i32 %then_count 0) (then (return)) (else))
+    (let %br_idx i32 (load.i32 (load.field %first "children")))
+    (let %br_n (ptr $types.ASTNode) (call $types.ast_at %br_idx))
+    (if (ne.i32 (load.field %br_n "tag") 15) (then (return)) (else))
+    (if (eq.i32 (call $types.str_eq (load.field %br_n "str1") %label) 0) (then (return)) (else))
+    ;; Condition must be a cmpop (tag 7)
+    (let %cond_idx i32 (load.field %first "left"))
+    (if (eq.i32 %cond_idx -1) (then (return)) (else))
+    (let %cond (ptr $types.ASTNode) (call $types.ast_at %cond_idx))
+    (if (ne.i32 (load.field %cond "tag") 7) (then (return)) (else))
+    ;; Operator must be "ge" or "gt"
+    (let %op (ptr u8) (load.field %cond "str1"))
+    (let %is_ge i32 (call $types.str_eq %op "ge"))
+    (let %is_gt i32 (call $types.str_eq %op "gt"))
+    (if (eq.i32 (or.i32 %is_ge %is_gt) 0) (then (return)) (else))
+    ;; Left operand = counter (must be var-ref)
+    (let %counter_idx i32 (load.field %cond "left"))
+    (if (eq.i32 %counter_idx -1) (then (return)) (else))
+    (let %counter_n (ptr $types.ASTNode) (call $types.ast_at %counter_idx))
+    (if (ne.i32 (load.field %counter_n "tag") 4) (then (return)) (else))
+    (let %counter_name (ptr u8) (load.field %counter_n "str1"))
+    ;; Right operand = bound → evaluate
+    (let %bound_val i32 (call $chk_eval_const (load.field %cond "right")))
+    (if (eq.i32 %bound_val -1) (then (return)) (else))
+    ;; Compute max_counter: ge → bound-1, gt → bound
+    (local mut $max_counter i32 %bound_val)
+    (if (eq.i32 %is_ge 1)
+      (then (set $max_counter (sub.i32 %bound_val 1)))
+      (else))
+    ;; Walk the else-branch looking for array accesses
+    (let %else_count i32 (load.field %first "count2"))
+    (if (gt.i32 %else_count 0)
+      (then (call $chk_loop_scan_children (load.field %first "children2") %else_count %counter_name $max_counter))
+      (else)))
 
   ;; ── Module checking ────────────────────────────────────────
 
