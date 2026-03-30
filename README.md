@@ -37,7 +37,7 @@ ARIA-IR compiles to C99 and matches its computational power, but several C const
 |---|---|---|
 | `union` | Not available | Eliminates type confusion (CWE-843). Type punning done via explicit casts instead. |
 | `void*` | Not available | All pointers are typed (`(ptr i32)`, `(ptr $Node)`). Eliminates unsafe generic pointer patterns. |
-| Stack arrays | Not available | All dynamic memory is heap-allocated via `(alloc T N)`. Eliminates dangling pointers to stack locals. |
+| Stack arrays | Not yet available | Planned as `(local-array %buf T N)` with a dedicated pointer state that prevents free and return-of-stack-pointer. Would be safer than heap (no leaks, automatic cleanup) and faster (zero-cost allocation). |
 | `goto` | Not available | Structured control flow only (`if`/`loop`/`br`). Eliminates spaghetti control flow. |
 | Variadic functions | Not available | `print` is a built-in; user-defined variadics would undermine type safety. |
 | Threads / pthreads | Not available | Single-threaded execution. Eliminates data races, deadlocks, and TOCTOU vulnerabilities. |
