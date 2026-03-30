@@ -9,9 +9,25 @@ The reference ARIA-IR compiler is **ariac** — a self-hosted compiler written i
 ariac provides capabilities beyond the Clojure bootstrap:
 
 - **Multi-module programs** with `(import "path.aria")` and qualified access (`$module.func`)
-- **Compile-time safety**: memory safety (use-after-free, double-free, null deref, leaks, bounds checking, loop bound analysis, cross-function free inference, global state tracking), type safety (operand/store/call/return type validation), format string validation, dead code detection, uninitialized variable detection, unsafe cast detection, and effect verification (41 test cases — see `examples/mem-check-test/`)
+- **Compile-time safety** with 40+ static analyses and 54 test cases (see `examples/mem-check-test/`)
 - **Mandatory intent annotations** enforced by the checker
 - **Error positions** with line and column numbers
+
+#### Safety analyses
+
+The checker performs comprehensive compile-time safety analysis without requiring ownership annotations or language extensions. All analyses run in ~40ms on the full ariac codebase (~4800 LOC, 6 modules).
+
+**Memory safety:**
+use-after-free (direct, via alias, via struct field, cross-function), double-free, null pointer dereference, free of non-pointer, memory leaks (function exit, pointer reassignment, loop body), pointer alias tracking, struct field dangling pointer tracking, cross-function free inference via multi-round analysis with transitive fixed-point propagation, cross-function conditional frees (may-be-freed state), global pointer state tracking across function boundaries, static bounds checking with constant propagation, capacity propagation through derived pointers, loop bound vs array capacity analysis with nested offset detection, uninitialized memory read detection, alloc size overflow warning.
+
+**Type safety:**
+binary/unary operand type mismatch (integer vs float, skips pointer arithmetic), comparison suffix mismatch, store value type mismatch, store/load suffix vs pointer element type, call argument type and count mismatch, return value type mismatch, let initializer type mismatch, set assignment type mismatch, store-field value type vs field type, alloc element type vs pointer type, unsafe integer-to-pointer and pointer-to-integer cast detection.
+
+**Control flow and validation:**
+dead code after return, dead code after branch, dead code after if where both branches return, missing return path in non-void functions, format string argument count and type validation, print without format string, division by literal zero, remainder by literal zero, shift by excessive or negative amount, uninitialized scalar variables, effect verification (pure with side effects, undeclared effects), immutability enforcement, undefined variable detection, mandatory intent annotations, global initializer type validation.
+
+**Design limits (out of scope for static analysis without annotations):**
+integer overflow in general arithmetic (requires range analysis / abstract interpretation), dynamic bounds checking with runtime indices (partially covered via loop bound analysis when bounds are compile-time constants), infinite loop detection (halting problem), comparison operand type checking (skipped to allow legitimate null-checks like `eq.i32 $ptr 0`).
 
 ## Prerequisites
 

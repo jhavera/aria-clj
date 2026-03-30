@@ -1,0 +1,10 @@
+;; Test: global initializer type mismatch
+;; Expected: WARN — global initializer type mismatch for '$g'
+
+(module "test_global_init_type"
+  (global mut $g i32 3.14)
+  (func $main
+    (result i32) (effects io)
+    (intent "Global initialized with wrong type")
+    (print "g = %d\n" $g)
+    (return 0)))
