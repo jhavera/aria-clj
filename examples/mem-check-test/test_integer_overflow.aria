@@ -1,0 +1,10 @@
+;; Test: integer overflow in constant addition
+;; Expected: WARN — integer overflow in constant addition
+
+(module "test_integer_overflow"
+  (func $main
+    (result i32) (effects io)
+    (intent "Add two large constants that overflow i32")
+    (let %x i32 (add.i32 2147483647 1))
+    (print "x = %d\n" %x)
+    (return 0)))

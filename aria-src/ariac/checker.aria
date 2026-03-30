@@ -865,8 +865,8 @@
   (func $chk_type_category
     (param $type_idx i32)
     (result i32)
-    (effects mem)
-    (intent "Map type to category: 0=integer, 1=float, 2=pointer, -1=unknown")
+    (effects mem io div)
+    (intent "Map type to category: 0=integer, 1=float, 2=pointer, 3=struct, -1=unknown")
     (if (eq.i32 $type_idx -1) (then (return -1)) (else))
     (if (eq.i32 $type_idx $ty_i32)  (then (return 0)) (else))
     (if (eq.i32 $type_idx $ty_i64)  (then (return 0)) (else))
@@ -874,9 +874,17 @@
     (if (eq.i32 $type_idx $ty_f64)  (then (return 1)) (else))
     (if (eq.i32 $type_idx $ty_void) (then (return -1)) (else))
     (if (call $is_pointer_type $type_idx) (then (return 2)) (else))
+    ;; Try resolving name references (e.g., "$Node" → actual struct type)
+    (let %resolved i32 (call $chk_resolve_type $type_idx))
+    (if (ne.i32 %resolved $type_idx)
+      (then
+        (let %rti (ptr $types.TypeInfo) (call $types.type_at %resolved))
+        (if (eq.i32 (load.field %rti "kind") 4) (then (return 3)) (else)))
+      (else))
     ;; Fallback: check TypeInfo kind
     (let %ti (ptr $types.TypeInfo) (call $types.type_at $type_idx))
     (let %kind i32 (load.field %ti "kind"))
+    (if (eq.i32 %kind 4) (then (return 3)) (else))
     (if (eq.i32 %kind 1) (then (return 2)) (else))
     (if (eq.i32 %kind 0)
       (then
@@ -888,6 +896,42 @@
 
   ;; ── Field type lookup ───────────────────────────────────────
 
+  (func $chk_td_lookup
+    (param $name (ptr u8))
+    (result i32)
+    (effects mem io div)
+    (intent "Look up type-def by name, return type_idx or -1")
+    (if (eq.i32 $name 0) (then (return -1)) (else))
+    (local mut $i i32 0)
+    (loop $search
+      (if (ge.i32 $i $td_pos) (then (br $search))
+        (else
+          (if (call $types.str_eq (load.i32 (add.i32 $td_names $i)) $name)
+            (then (return (load.i32 (add.i32 $td_types $i))))
+            (else (set $i (add.i32 $i 1)))))))
+    (return -1))
+
+  (func $chk_resolve_type
+    (param $type_idx i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Resolve type name references to their actual type definitions")
+    (if (eq.i32 $type_idx -1) (then (return -1)) (else))
+    (let %ti (ptr $types.TypeInfo) (call $types.type_at $type_idx))
+    ;; If it's a scalar (kind=0) with a name, try to resolve via type-def registry
+    (if (eq.i32 (load.field %ti "kind") 0)
+      (then
+        (let %tname (ptr u8) (load.field %ti "name"))
+        (if (ne.i32 %tname 0)
+          (then
+            (let %resolved i32 (call $chk_td_lookup %tname))
+            (if (ne.i32 %resolved -1)
+              (then (return %resolved))
+              (else)))
+          (else)))
+      (else))
+    (return $type_idx))
+
   (func $chk_field_type
     (param $obj_type i32)
     (param $field_name (ptr u8))
@@ -898,8 +942,8 @@
     ;; obj_type should be a pointer (kind=1)
     (let %obj_ti (ptr $types.TypeInfo) (call $types.type_at $obj_type))
     (if (ne.i32 (load.field %obj_ti "kind") 1) (then (return -1)) (else))
-    ;; Get inner type (the struct)
-    (let %struct_idx i32 (load.field %obj_ti "inner"))
+    ;; Get inner type (the struct) — resolve name references
+    (let %struct_idx i32 (call $chk_resolve_type (load.field %obj_ti "inner")))
     (if (eq.i32 %struct_idx -1) (then (return -1)) (else))
     (let %struct_ti (ptr $types.TypeInfo) (call $types.type_at %struct_idx))
     (if (ne.i32 (load.field %struct_ti "kind") 4) (then (return -1)) (else))
@@ -911,9 +955,22 @@
       (if (ge.i32 $fi %fcount) (then (br $fscan))
         (else
           (let %fld (ptr $types.FieldInfo) (call $types.field_at (add.i32 %fstart $fi)))
-          (if (call $types.str_eq (load.field %fld "name") $field_name)
+          (let %fname (ptr u8) (load.field %fld "name"))
+          ;; Compare field name (may have $ prefix in definition but not in usage)
+          (if (call $types.str_eq %fname $field_name)
             (then (return (load.field %fld "type_idx")))
-            (else (set $fi (add.i32 $fi 1)))))))
+            (else
+              ;; Try skipping $ prefix on field def name
+              (if (ne.i32 %fname 0)
+                (then
+                  (if (eq.i32 (load.u8 %fname) 36)
+                    (then
+                      (if (call $types.str_eq (add.i32 %fname 1) $field_name)
+                        (then (return (load.field %fld "type_idx")))
+                        (else)))
+                    (else)))
+                (else))))
+          (set $fi (add.i32 $fi 1)))))
     (return -1))
 
   ;; ── Format string validation ────────────────────────────────
@@ -1191,6 +1248,54 @@
                         (else)))))
                   (else)))
               (else))))
+        ;; Constant integer overflow check
+        (if (call $types.str_eq %bop "add")
+          (then
+            (let %ov_l i32 (call $chk_eval_const (load.field %n "left")))
+            (let %ov_r i32 (call $chk_eval_const (load.field %n "right")))
+            (if (ne.i32 %ov_l -1)
+              (then (if (ne.i32 %ov_r -1)
+                (then
+                  (let %ov_sum i32 (add.i32 %ov_l %ov_r))
+                  ;; Positive + positive = negative → overflow
+                  (if (gt.i32 %ov_l 0)
+                    (then (if (gt.i32 %ov_r 0)
+                      (then (if (lt.i32 %ov_sum 0)
+                        (then (call $chk_warn "integer overflow in constant addition"))
+                        (else)))
+                      (else)))
+                    (else
+                      ;; Negative + negative = positive → underflow
+                      (if (lt.i32 %ov_l 0)
+                        (then (if (lt.i32 %ov_r 0)
+                          (then (if (gt.i32 %ov_sum 0)
+                            (then (call $chk_warn "integer underflow in constant addition"))
+                            (else)))
+                          (else)))
+                        (else)))))
+                (else)))
+              (else)))
+          (else
+            (if (call $types.str_eq %bop "mul")
+              (then
+                (let %ml i32 (call $chk_eval_const (load.field %n "left")))
+                (let %mr i32 (call $chk_eval_const (load.field %n "right")))
+                (if (ne.i32 %ml -1)
+                  (then (if (ne.i32 %mr -1)
+                    (then
+                      (if (ne.i32 %ml 0)
+                        (then (if (ne.i32 %mr 0)
+                          (then
+                            (let %mprod i32 (mul.i32 %ml %mr))
+                            ;; Check: result / left != right → overflow
+                            (if (ne.i32 (div.i32 %mprod %ml) %mr)
+                              (then (call $chk_warn "integer overflow in constant multiplication"))
+                              (else)))
+                          (else)))
+                        (else)))
+                    (else)))
+                  (else)))
+              (else))))
         (return (call $chk_suffix_type (load.field %n "str2"))))
       (else))
 
@@ -1227,6 +1332,19 @@
             (then (if (ne.i32 %csuf_cat -1)
               (then (if (ne.i32 %csuf_cat 2)
                 (then (if (ne.i32 %cl_cat %csuf_cat)
+                  (then (call $chk_warn "comparison operand type does not match suffix"))
+                  (else)))
+                (else)))
+              (else)))
+            (else)))
+          (else))
+        ;; Also check RIGHT operand category vs suffix
+        (let %cr_cat i32 (call $chk_type_category %cr_type))
+        (if (ne.i32 %cr_cat -1)
+          (then (if (ne.i32 %cr_cat 2)
+            (then (if (ne.i32 %csuf_cat -1)
+              (then (if (ne.i32 %csuf_cat 2)
+                (then (if (ne.i32 %cr_cat %csuf_cat)
                   (then (call $chk_warn "comparison operand type does not match suffix"))
                   (else)))
                 (else)))
@@ -1671,6 +1789,25 @@
         (set $chk_in_loop (add.i32 $chk_in_loop 1))
         (call $chk_scope_enter)
         (call $check_body (load.field %n "children") (load.field %n "count"))
+        ;; Infinite loop detection
+        (let %loop_label (ptr u8) (load.field %n "str1"))
+        (if (ne.i32 %loop_label 0)
+          (then
+            (let %body_c i32 (load.field %n "count"))
+            (let %body_a (ptr i32) (load.field %n "children"))
+            (local mut $has_exit i32 0)
+            (local mut $bi i32 0)
+            (loop $bscan
+              (if (ge.i32 $bi %body_c) (then (br $bscan))
+                (else
+                  (if (call $chk_loop_has_cond_exit (load.i32 (add.i32 %body_a $bi)) %loop_label)
+                    (then (set $has_exit 1))
+                    (else))
+                  (set $bi (add.i32 $bi 1)))))
+            (if (eq.i32 $has_exit 0)
+              (then (call $chk_warn "loop has no conditional exit (potential infinite loop)"))
+              (else)))
+          (else))
         ;; Loop bound analysis
         (call $chk_analyze_loop $aidx)
         (call $chk_scope_leave)
@@ -2556,6 +2693,80 @@
     (intent "Infer which function params are freed, using multi-round analysis")
     (call $scan_round1)
     (call $scan_round2))
+
+  ;; ── Infinite loop detection ────────────────────────────────
+
+  (func $chk_loop_has_cond_exit
+    (param $idx i32)
+    (param $label (ptr u8))
+    (result i32)
+    (effects mem io div)
+    (intent "Check if node contains a conditional exit (br $label inside an if). Returns 1 if found")
+    (if (eq.i32 $idx -1) (then (return 0)) (else))
+    (let %n (ptr $types.ASTNode) (call $types.ast_at $idx))
+    (let %tag i32 (load.field %n "tag"))
+    ;; If this is an if-statement, check if it contains br or return
+    (if (eq.i32 %tag 12)
+      (then
+        ;; Check then-branch for br $label or return
+        (let %tc i32 (load.field %n "count"))
+        (let %ta (ptr i32) (load.field %n "children"))
+        (local mut $ti i32 0)
+        (loop $tscan
+          (if (ge.i32 $ti %tc) (then (br $tscan))
+            (else
+              (let %tn (ptr $types.ASTNode) (call $types.ast_at (load.i32 (add.i32 %ta $ti))))
+              (let %ttag i32 (load.field %tn "tag"))
+              ;; br to our label
+              (if (eq.i32 %ttag 15)
+                (then
+                  (if (call $types.str_eq (load.field %tn "str1") $label)
+                    (then (return 1))
+                    (else)))
+                (else))
+              ;; return also exits the loop
+              (if (eq.i32 %ttag 11) (then (return 1)) (else))
+              (set $ti (add.i32 $ti 1)))))
+        ;; Check else-branch for br $label or return
+        (let %ec i32 (load.field %n "count2"))
+        (let %ea (ptr i32) (load.field %n "children2"))
+        (local mut $ei i32 0)
+        (loop $escan
+          (if (ge.i32 $ei %ec) (then (br $escan))
+            (else
+              (let %en (ptr $types.ASTNode) (call $types.ast_at (load.i32 (add.i32 %ea $ei))))
+              (let %etag i32 (load.field %en "tag"))
+              (if (eq.i32 %etag 15)
+                (then
+                  (if (call $types.str_eq (load.field %en "str1") $label)
+                    (then (return 1))
+                    (else)))
+                (else))
+              (if (eq.i32 %etag 11) (then (return 1)) (else))
+              (set $ei (add.i32 $ei 1))))))
+      (else))
+    ;; Recurse into children
+    (let %cc i32 (load.field %n "count"))
+    (let %ca (ptr i32) (load.field %n "children"))
+    (local mut $ci i32 0)
+    (loop $cscan
+      (if (ge.i32 $ci %cc) (then (br $cscan))
+        (else
+          (if (call $chk_loop_has_cond_exit (load.i32 (add.i32 %ca $ci)) $label)
+            (then (return 1))
+            (else))
+          (set $ci (add.i32 $ci 1)))))
+    (let %c2c i32 (load.field %n "count2"))
+    (let %c2a (ptr i32) (load.field %n "children2"))
+    (local mut $c2i i32 0)
+    (loop $c2scan
+      (if (ge.i32 $c2i %c2c) (then (br $c2scan))
+        (else
+          (if (call $chk_loop_has_cond_exit (load.i32 (add.i32 %c2a $c2i)) $label)
+            (then (return 1))
+            (else))
+          (set $c2i (add.i32 $c2i 1)))))
+    (return 0))
 
   ;; ── Loop bound analysis ────────────────────────────────────
 
