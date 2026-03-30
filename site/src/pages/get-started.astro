@@ -134,16 +134,24 @@ Hello, world!</code></pre>
       <!-- ariac: Self-Hosted Compiler -->
       <section class="mb-12">
         <h2 class="font-mono text-xl font-bold mb-4">ariac: Self-Hosted Compiler</h2>
-        <p class="text-muted mb-4">ariac is the ARIA compiler written in ARIA-IR itself (~3800 LOC). Build it once with the Clojure compiler, then use it to compile any ARIA program without the Clojure CLI.</p>
-        <pre><code><span class="text-muted"># Build ariac from source</span>
-clojure -M:run aria-src/ariac.aria --emit-c -o /tmp/ariac.c
-gcc -std=c99 -fwrapv -o ariac /tmp/ariac.c -lm
+        <p class="text-muted mb-4">ariac is the reference ARIA-IR compiler, written in ARIA-IR itself across 6 modules (~5220 LOC). It supports multi-module programs, compile-time memory safety, and mandatory intent annotations. The Clojure implementation serves as the initial bootstrap only.</p>
+        <p class="text-muted mb-4">Two-stage build:</p>
+        <pre><code><span class="text-muted"># Stage 1: build ariac-bootstrap from the Clojure compiler</span>
+clojure -M:run aria-src/ariac-bootstrap.aria --emit-c -o /tmp/bootstrap.c
+gcc -std=c99 -fwrapv -o ariac-bootstrap /tmp/bootstrap.c -lm
 
-<span class="text-muted"># Use ariac to compile any ARIA program</span>
+<span class="text-muted"># Stage 2: build ariac from ariac-bootstrap</span>
+./ariac-bootstrap aria-src/ariac/main.aria --emit-c -o /tmp/ariac.c
+gcc -std=c99 -fwrapv -o ariac /tmp/ariac.c -lm</code></pre>
+        <p class="text-muted my-4">Use ariac to compile any ARIA program:</p>
+        <pre><code><span class="text-muted"># Single-module program</span>
 ./ariac examples/fibonacci.aria --run
 
-<span class="text-muted"># Verify the bootstrap: ariac compiles itself</span>
-./ariac aria-src/ariac.aria -o ariac2
+<span class="text-muted"># Multi-module program</span>
+./ariac examples/import_demo/main.aria --run
+
+<span class="text-muted"># Verify bootstrap: ariac compiles itself</span>
+./ariac aria-src/ariac/main.aria -o ariac2
 ./ariac2 examples/fibonacci.aria --run</code></pre>
       </section>
 

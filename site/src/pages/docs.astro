@@ -145,6 +145,19 @@ import Base from '../layouts/Base.astro';
 (export $fibonacci)</code></pre>
       </section>
 
+      <!-- Module Imports -->
+      <section class="mb-12">
+        <h2 class="font-mono text-2xl font-bold mb-4">Module Imports</h2>
+        <p class="text-text/90 leading-relaxed mb-4">
+          ARIA-IR supports multi-module programs. A module can import symbols from another file using <code>import</code>. Imported symbols are accessed with qualified names.
+        </p>
+        <pre><code>(import "math.aria")
+(call $math.gcd 48 18)</code></pre>
+        <div class="mt-4 space-y-3 text-sm text-muted">
+          <p>Path resolution is relative to the importing file. Only symbols declared with <code>(export $name)</code> in the imported module are visible. Circular imports are detected and rejected. The ariac compiler resolves all modules and emits a single C file with <code>module__func</code> prefixed names.</p>
+        </div>
+      </section>
+
       <!-- Comptime -->
       <section class="mb-12">
         <h2 class="font-mono text-2xl font-bold mb-4">Compile-Time Evaluation</h2>
@@ -252,6 +265,51 @@ __attribute__((const))
 int32_t add(int32_t x, int32_t y) {
     return x + y;
 }`} /></pre>
+      </section>
+
+      <!-- Memory Safety -->
+      <section class="mb-12">
+        <h2 class="font-mono text-2xl font-bold mb-4">Compile-Time Memory Safety</h2>
+        <p class="text-text/90 leading-relaxed mb-4">
+          The ariac checker performs static pointer state analysis. Every pointer variable is tracked through four states: alive, freed, null, and owns-allocation. Eight error classes are detected at compile time.
+        </p>
+        <div class="space-y-2 text-sm">
+          <div class="bg-surface border border-border rounded-lg p-4">
+            <code class="text-[#ff7b72]">use after free</code>
+            <span class="text-muted ml-2">Loading or storing to a pointer after it has been freed.</span>
+          </div>
+          <div class="bg-surface border border-border rounded-lg p-4">
+            <code class="text-[#ff7b72]">double free</code>
+            <span class="text-muted ml-2">Freeing the same pointer twice.</span>
+          </div>
+          <div class="bg-surface border border-border rounded-lg p-4">
+            <code class="text-[#ff7b72]">null dereference</code>
+            <span class="text-muted ml-2">Using a pointer initialized to 0 or with no initializer.</span>
+          </div>
+          <div class="bg-surface border border-border rounded-lg p-4">
+            <code class="text-[#ffa657]">memory leak</code>
+            <span class="text-muted ml-2">An owned allocation that is never freed, returned, or passed out.</span>
+          </div>
+          <div class="bg-surface border border-border rounded-lg p-4">
+            <code class="text-[#ff7b72]">free of non-pointer</code>
+            <span class="text-muted ml-2">Attempting to free a variable that is not a pointer type.</span>
+          </div>
+          <div class="bg-surface border border-border rounded-lg p-4">
+            <code class="text-[#ff7b72]">alias use-after-free</code>
+            <span class="text-muted ml-2">Using an alias of a freed pointer.</span>
+          </div>
+          <div class="bg-surface border border-border rounded-lg p-4">
+            <code class="text-[#ff7b72]">pointer arithmetic alias</code>
+            <span class="text-muted ml-2">Using an offset pointer after its base is freed.</span>
+          </div>
+          <div class="bg-surface border border-border rounded-lg p-4">
+            <code class="text-[#ff7b72]">struct field dangling</code>
+            <span class="text-muted ml-2">Loading a struct field whose stored pointer has been freed.</span>
+          </div>
+        </div>
+        <p class="text-muted text-sm mt-4">
+          Memory safety analysis is implemented in ariac. The Clojure compiler does not perform pointer state tracking.
+        </p>
       </section>
 
       <!-- Examples -->
