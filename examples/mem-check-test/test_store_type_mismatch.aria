@@ -1,0 +1,13 @@
+;; Test: store value type mismatch
+;; Expected: WARN — store value type mismatch
+
+(module "test_store_type_mismatch"
+  (func $main
+    (result i32)
+    (effects io mem)
+    (intent "Store a float into an i32 memory slot")
+    (let %p (ptr i32) (alloc i32 1))
+    ;; store.i32 expects i32 value, but 3.14 is f64
+    (store.i32 %p 3.14)
+    (free %p)
+    (return 0)))

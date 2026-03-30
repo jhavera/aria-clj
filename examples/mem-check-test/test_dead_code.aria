@@ -1,0 +1,12 @@
+;; Test: dead code after return statement
+;; Expected: WARN — dead code after return statement
+
+(module "test_dead_code"
+  (func $main
+    (result i32)
+    (effects io)
+    (intent "Have unreachable code after return")
+    (return 0)
+    ;; This code is unreachable
+    (print "this should never execute\n")
+    (return 1)))

@@ -1,0 +1,14 @@
+;; Test: binary operand type mismatch (integer vs float)
+;; Expected: WARN — binary operand type mismatch (integer vs float)
+
+(module "test_binop_type_mismatch"
+  (func $main
+    (result i32)
+    (effects io)
+    (intent "Mix integer and float operands in binary operation")
+    (let %x i32 10)
+    (let %y f64 3.14)
+    ;; add.i32 with one i32 and one f64 operand → type mismatch
+    (let %z i32 (add.i32 %x %y))
+    (print "z = %d\n" %z)
+    (return 0)))

@@ -9,7 +9,7 @@ The reference ARIA-IR compiler is **ariac** — a self-hosted compiler written i
 ariac provides capabilities beyond the Clojure bootstrap:
 
 - **Multi-module programs** with `(import "path.aria")` and qualified access (`$module.func`)
-- **Compile-time memory safety**: use-after-free, double-free, null deref, leak detection, pointer arithmetic aliases, struct field dangling pointers, cross-function free inference, bounds checking with constant propagation, loop bound vs array capacity analysis, return value safety, leak on reassignment, loop leak detection, unsafe cast detection, format string validation (count + types), conditional free precision, uninitialized memory detection, alloc size overflow warning, and global pointer state tracking (33 test cases — see `examples/mem-check-test/`)
+- **Compile-time safety**: memory safety (use-after-free, double-free, null deref, leaks, bounds checking, loop bound analysis, cross-function free inference, global state tracking), type safety (operand/store/call/return type validation), format string validation, dead code detection, uninitialized variable detection, unsafe cast detection, and effect verification (41 test cases — see `examples/mem-check-test/`)
 - **Mandatory intent annotations** enforced by the checker
 - **Error positions** with line and column numbers
 
