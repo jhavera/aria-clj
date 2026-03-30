@@ -1,0 +1,10 @@
+;; Test: division by literal zero
+;; Expected: ERROR — division by zero
+
+(module "test_div_by_zero"
+  (func $main
+    (result i32) (effects io div)
+    (intent "Divide by literal zero")
+    (let %x i32 (div.i32 42 0))
+    (print "x = %d\n" %x)
+    (return 0)))

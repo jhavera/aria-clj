@@ -1,0 +1,15 @@
+;; Test: wrong number of arguments in function call
+;; Expected: ERROR — wrong number of arguments in call to '$add'
+
+(module "test_call_argc_mismatch"
+  (func $add
+    (param $a i32) (param $b i32)
+    (result i32) (effects pure)
+    (intent "Add two integers")
+    (return (add.i32 $a $b)))
+  (func $main
+    (result i32) (effects io)
+    (intent "Call function with wrong arg count")
+    (let %r i32 (call $add 1))
+    (print "r = %d\n" %r)
+    (return 0)))

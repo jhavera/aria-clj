@@ -1,0 +1,11 @@
+;; Test: store suffix vs pointer element type mismatch
+;; Expected: WARN — store suffix type does not match pointer element type
+
+(module "test_store_ptr_type"
+  (func $main
+    (result i32) (effects io mem)
+    (intent "Store i32 through a ptr-to-f64")
+    (let %p (ptr f64) (alloc f64 1))
+    (store.i32 %p 42)
+    (free %p)
+    (return 0)))

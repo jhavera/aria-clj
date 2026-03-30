@@ -1,0 +1,9 @@
+;; Test: print statement without format string
+;; Expected: ERROR — print statement missing format string
+
+(module "test_print_no_format"
+  (func $main
+    (result i32) (effects io)
+    (intent "Call print with no format string")
+    (print)
+    (return 0)))
