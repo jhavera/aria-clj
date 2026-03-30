@@ -1805,7 +1805,21 @@
                     (else))
                   (set $bi (add.i32 $bi 1)))))
             (if (eq.i32 $has_exit 0)
-              (then (call $chk_warn "loop has no conditional exit (potential infinite loop)"))
+              (then
+                ;; Only warn if loop also has no function calls
+                ;; (loops with calls may be intentional: event loops, servers, REPLs)
+                (local mut $has_call i32 0)
+                (local mut $bci i32 0)
+                (loop $callscan
+                  (if (ge.i32 $bci %body_c) (then (br $callscan))
+                    (else
+                      (if (call $chk_body_has_call (load.i32 (add.i32 %body_a $bci)))
+                        (then (set $has_call 1))
+                        (else))
+                      (set $bci (add.i32 $bci 1)))))
+                (if (eq.i32 $has_call 0)
+                  (then (call $chk_warn "infinite loop with no exit and no function calls"))
+                  (else)))
               (else)))
           (else))
         ;; Loop bound analysis
@@ -2695,6 +2709,39 @@
     (call $scan_round2))
 
   ;; ── Infinite loop detection ────────────────────────────────
+
+  (func $chk_body_has_call
+    (param $idx i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Check if node tree contains any function call (tag 10). Returns 1 if found")
+    (if (eq.i32 $idx -1) (then (return 0)) (else))
+    (let %n (ptr $types.ASTNode) (call $types.ast_at $idx))
+    (if (eq.i32 (load.field %n "tag") 10) (then (return 1)) (else))
+    ;; Recurse into children
+    (if (ne.i32 (load.field %n "left") -1)
+      (then (if (call $chk_body_has_call (load.field %n "left")) (then (return 1)) (else)))
+      (else))
+    (if (ne.i32 (load.field %n "right") -1)
+      (then (if (call $chk_body_has_call (load.field %n "right")) (then (return 1)) (else)))
+      (else))
+    (let %cc i32 (load.field %n "count"))
+    (let %ca (ptr i32) (load.field %n "children"))
+    (local mut $ci i32 0)
+    (loop $cs
+      (if (ge.i32 $ci %cc) (then (br $cs))
+        (else
+          (if (call $chk_body_has_call (load.i32 (add.i32 %ca $ci))) (then (return 1)) (else))
+          (set $ci (add.i32 $ci 1)))))
+    (let %c2c i32 (load.field %n "count2"))
+    (let %c2a (ptr i32) (load.field %n "children2"))
+    (local mut $c2i i32 0)
+    (loop $c2s
+      (if (ge.i32 $c2i %c2c) (then (br $c2s))
+        (else
+          (if (call $chk_body_has_call (load.i32 (add.i32 %c2a $c2i))) (then (return 1)) (else))
+          (set $c2i (add.i32 $c2i 1)))))
+    (return 0))
 
   (func $chk_loop_has_cond_exit
     (param $idx i32)

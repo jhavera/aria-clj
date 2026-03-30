@@ -1,5 +1,5 @@
 ;; Test: infinite loop with no conditional exit
-;; Expected: WARN — loop has no conditional exit (potential infinite loop)
+;; Expected: WARN — infinite loop with no exit and no function calls
 
 (module "test_infinite_loop"
   (func $main
