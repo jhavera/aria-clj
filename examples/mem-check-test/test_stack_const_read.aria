@@ -1,0 +1,10 @@
+;; Test: immutable per-element array, read only — no false positives
+;; Expected: OK — no errors, no warnings
+
+(module "test_stack_const_read"
+  (func $main
+    (result i32) (effects io mem div)
+    (intent "Create immutable per-element array and read values")
+    (local-array %lut i32 1 4 9 16 25)
+    (print "squares: %d %d %d %d %d\n" (load.i32 (add.i32 %lut 0)) (load.i32 (add.i32 %lut 1)) (load.i32 (add.i32 %lut 2)) (load.i32 (add.i32 %lut 3)) (load.i32 (add.i32 %lut 4)))
+    (return 0)))

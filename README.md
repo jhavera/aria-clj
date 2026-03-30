@@ -9,7 +9,7 @@ The reference ARIA-IR compiler is **ariac** — a self-hosted compiler written i
 ariac provides capabilities beyond the Clojure bootstrap:
 
 - **Multi-module programs** with `(import "path.aria")` and qualified access (`$module.func`)
-- **Compile-time safety** with 45+ static analyses and 58 test cases (see `examples/mem-check-test/`)
+- **Compile-time safety** with 45+ static analyses and 64 test cases (see `examples/mem-check-test/`)
 - **Mandatory intent annotations** enforced by the checker
 - **Error positions** with line and column numbers
 
@@ -37,7 +37,7 @@ ARIA-IR compiles to C99 and matches its computational power, but several C const
 |---|---|---|
 | `union` | Not available | Eliminates type confusion (CWE-843). Type punning done via explicit casts instead. |
 | `void*` | Not available | All pointers are typed (`(ptr i32)`, `(ptr $Node)`). Eliminates unsafe generic pointer patterns. |
-| Stack arrays | Not yet available | Planned as `(local-array %buf T N)` with a dedicated pointer state that prevents free and return-of-stack-pointer. Would be safer than heap (no leaks, automatic cleanup) and faster (zero-cost allocation). |
+| Stack arrays | `(local-array $buf T N)` | Available with safety enforced: cannot free (ERROR), cannot return (ERROR), cannot store in global (ERROR). Safer than heap — no leaks, automatic cleanup, zero-cost allocation. |
 | `goto` | Not available | Structured control flow only (`if`/`loop`/`br`). Eliminates spaghetti control flow. |
 | Variadic functions | Not available | `print` is a built-in; user-defined variadics would undermine type safety. |
 | Threads / pthreads | Not available | Single-threaded execution. Eliminates data races, deadlocks, and TOCTOU vulnerabilities. |
@@ -149,11 +149,20 @@ Functions and blocks carry human-readable `intent` annotations describing their 
 ### Memory operations
 
 ```lisp
-(let %arr (ptr i32) (alloc i32 8))   ; allocate
+;; Heap allocation (requires manual free)
+(let %arr (ptr i32) (alloc i32 8))   ; allocate on heap
 (store.i32 %arr 42)                  ; write
 (let %val i32 (load.i32 %arr))       ; read
 (free %arr)                          ; deallocate
+
+;; Stack allocation (automatic cleanup, zero-cost, no free needed)
+(local-array $buf i32 16)            ; 16 ints on stack
+(store.i32 (add.i32 $buf 0) 42)     ; write
+(let %v i32 (load.i32 $buf))        ; read
+;; $buf is freed automatically when the scope exits
 ```
+
+Stack arrays via `local-array` are safer than heap: no memory leaks (automatic cleanup), no double-free (cannot `free`), no dangling returns (checker prevents returning stack pointers). The checker enforces all bounds, uninitialized-read, and escape checks at compile time.
 
 ## ariac — Self-hosted compiler
 
@@ -236,7 +245,8 @@ ariac examples/import_demo/main.aria --run    # Multi-module example
 | `math_demo.aria` | Multiple algorithms (GCD, factorial, primality, fast exponentiation), type casting |
 | `float_demo.aria` | Float arithmetic, pi, temperature conversion, int-to-float cast |
 | `bootstrap_demo.aria` | Strings as `(ptr u8)`, externs, file I/O, CLI args |
-| `mem-check-test/` | Memory safety checker test suite (12 intentional faults) |
+| `local_array_demo.aria` | Stack-allocated arrays, zero-cost allocation, automatic cleanup |
+| `mem-check-test/` | Safety checker test suite (64 tests) |
 
 Run any example with the Clojure compiler:
 

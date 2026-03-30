@@ -1278,6 +1278,52 @@
       (else))
     (return %idx))
 
+  (func $parse_local_array
+    (param $sexp_idx i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Parse stack array: fill mode (5 args) or per-element mode (!=5 args)")
+    (let %idx i32 (call $ast_alloc))
+    (let %n (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n "tag" 35)
+    (let %name (ptr u8) (call $sexp_str (call $sexp_child $sexp_idx 1)))
+    (store.field %n "str1" %name)
+    (let %elem_type i32 (call $parse_type (call $sexp_child $sexp_idx 2)))
+    (store.field %n "type1" %elem_type)
+    ;; Detect % sigil → int1=1 (immutable)
+    (let %n1b (ptr $ASTNode) (call $ast_at %idx))
+    (if (eq.i32 (load.u8 %name) 37)
+      (then (store.field %n1b "int1" 1))
+      (else (store.field %n1b "int1" 0)))
+    (let %sc i32 (call $sexp_count $sexp_idx))
+    (if (eq.i32 %sc 5)
+      (then
+        ;; Fill mode
+        (let %n2 (ptr $ASTNode) (call $ast_at %idx))
+        (store.field %n2 "bool1" 0)
+        (store.field %n2 "left" (call $parse_expr (call $sexp_child $sexp_idx 3)))
+        (let %n2b (ptr $ASTNode) (call $ast_at %idx))
+        (store.field %n2b "right" (call $parse_expr (call $sexp_child $sexp_idx 4))))
+      (else
+        ;; Per-element mode
+        (let %n2c (ptr $ASTNode) (call $ast_at %idx))
+        (store.field %n2c "bool1" 1)
+        (call $ast_init_children %idx)
+        (local mut $vi i32 3)
+        (loop $vals
+          (if (ge.i32 $vi %sc) (then (br $vals))
+            (else
+              (call $ast_push_child %idx (call $parse_expr (call $sexp_child $sexp_idx $vi)))
+              (set $vi (add.i32 $vi 1)))))))
+    ;; type2 = pointer-to-element type
+    (let %ptr_type i32 (call $type_alloc))
+    (let %pt (ptr $TypeInfo) (call $type_at %ptr_type))
+    (store.field %pt "kind" 1)
+    (store.field %pt "inner" %elem_type)
+    (let %n3 (ptr $ASTNode) (call $ast_at %idx))
+    (store.field %n3 "type2" %ptr_type)
+    (return %idx))
+
   (func $parse_free
     (param $sexp_idx i32)
     (result i32)
@@ -1465,6 +1511,7 @@
     (if (call $str_eq $head_str "br")     (then (return (call $parse_br $sexp_idx)))     (else))
     (if (call $str_eq $head_str "br_if")  (then (return (call $parse_br_if $sexp_idx)))  (else))
     (if (call $str_eq $head_str "alloc")  (then (return (call $parse_alloc $sexp_idx)))  (else))
+    (if (call $str_eq $head_str "local-array") (then (return (call $parse_local_array $sexp_idx))) (else))
     (if (call $str_eq $head_str "free")   (then (return (call $parse_free $sexp_idx)))   (else))
     (if (call $str_eq $head_str "cast")   (then (return (call $parse_cast $sexp_idx)))   (else))
     (if (call $str_eq $head_str "print")  (then (return (call $parse_print_stmt $sexp_idx))) (else))
@@ -2356,6 +2403,18 @@
         (return (call $check_body (load.field %n "children") (load.field %n "count"))))
       (else))
 
+    ;; 35: local-array (basic support — register variable, check count/init)
+    (if (eq.i32 %tag 35)
+      (then
+        (set $chk_effects (or.i32 $chk_effects 2))
+        (let %la_ci i32 (load.field %n "left"))
+        (if (ne.i32 %la_ci -1) (then (call $check_node %la_ci)) (else))
+        (let %la_ii i32 (load.field %n "right"))
+        (if (ne.i32 %la_ii -1) (then (call $check_node %la_ii)) (else))
+        (call $chk_sym_define (load.field %n "str1") (load.field %n "type2") 0)
+        (return (load.field %n "type2")))
+      (else))
+
     ;; 27+: param, func, global, type-def, export, extern, module — skip
     (return -1))
 
@@ -2857,6 +2916,50 @@
           (then (print " = ") (call $cg_emit_expr (load.field %n "left")))
           (else))
         (print ";\n")
+        (return))
+      (else))
+
+    ;; 35: local-array
+    (if (eq.i32 %tag 35)
+      (then
+        (if (eq.i32 (load.field %n "bool1") 0)
+          (then
+            ;; Fill mode
+            (call $cg_emit_indent)
+            (call $cg_emit_type (load.field %n "type1"))
+            (print " ")
+            (call $cg_emit_name (load.field %n "str1"))
+            (print "[")
+            (call $cg_emit_expr (load.field %n "left"))
+            (print "];\n")
+            (call $cg_emit_indent)
+            (print "for (int32_t _la_i = 0; _la_i < ")
+            (call $cg_emit_expr (load.field %n "left"))
+            (print "; _la_i++) ")
+            (call $cg_emit_name (load.field %n "str1"))
+            (print "[_la_i] = ")
+            (call $cg_emit_expr (load.field %n "right"))
+            (print ";\n"))
+          (else
+            ;; Per-element mode
+            (call $cg_emit_indent)
+            (if (eq.i32 (cast i64 i32 (load.field %n "int1")) 1)
+              (then (print "const "))
+              (else))
+            (call $cg_emit_type (load.field %n "type1"))
+            (print " ")
+            (call $cg_emit_name (load.field %n "str1"))
+            (print "[] = {")
+            (let %vc i32 (load.field %n "count"))
+            (let %va (ptr i32) (load.field %n "children"))
+            (local mut $vi i32 0)
+            (loop $emit_vals
+              (if (ge.i32 $vi %vc) (then (br $emit_vals))
+                (else
+                  (if (gt.i32 $vi 0) (then (print ", ")) (else))
+                  (call $cg_emit_expr (load.i32 (add.i32 %va $vi)))
+                  (set $vi (add.i32 $vi 1)))))
+            (print "};\n")))
         (return))
       (else))
 

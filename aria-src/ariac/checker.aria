@@ -221,7 +221,7 @@
     (set $sym_pos (add.i32 $sym_pos 1)))
 
   ;; ── Pointer state tracking ─────────────────────────────────
-  ;; States: 0=alive, 1=freed, 2=null/uninitialized, 3=owns-allocation, 4=may-be-freed
+  ;; States: 0=alive, 1=freed, 2=null/uninitialized, 3=owns-allocation, 4=may-be-freed, 5=stack-local, 6=const-stack
 
   (func $is_pointer_type
     (param $type_idx i32)
@@ -1737,12 +1737,14 @@
                 (if (eq.i32 %rstate 3)
                   (then (call $chk_sym_reset_state %rname))
                   (else))
-                ;; Check returning freed or null pointer
-                (if (eq.i32 %rstate 1)
-                  (then (call $chk_error2 "returning freed pointer" %rname))
-                  (else (if (eq.i32 %rstate 2)
-                    (then (call $chk_error2 "returning null/uninitialized pointer" %rname))
-                    (else)))))
+                ;; Check returning freed, null, or stack-local pointer
+                (if (ge.i32 %rstate 5)
+                  (then (call $chk_error2 "returning pointer to stack-local array (dangling after return)" %rname))
+                  (else (if (eq.i32 %rstate 1)
+                    (then (call $chk_error2 "returning freed pointer" %rname))
+                    (else (if (eq.i32 %rstate 2)
+                      (then (call $chk_error2 "returning null/uninitialized pointer" %rname))
+                      (else)))))))
               (else
                 ;; Check returning literal 0 from pointer-returning function
                 (if (eq.i32 (load.field %rv_node "tag") 0)
@@ -1905,8 +1907,12 @@
                       (then (call $chk_error2 "free of non-pointer variable" %fname))
                       (else)))
                   (else))
-                ;; Check double free (state=1) or potential double free (state=4)
+                ;; Check stack-local (state=5 or 6) — cannot free stack memory
                 (let %fstate i32 (call $chk_sym_is_freed %fname))
+                (if (ge.i32 %fstate 5)
+                  (then (call $chk_error2 "cannot free stack-allocated array" %fname))
+                  (else))
+                ;; Check double free (state=1) or potential double free (state=4)
                 (if (eq.i32 %fstate 1)
                   (then (call $chk_error2 "double free of" %fname))
                   (else (if (eq.i32 %fstate 4)
@@ -2061,6 +2067,9 @@
             (if (eq.i32 (load.field %sa_check "tag") 4)
               (then
                 (let %sa_state i32 (call $chk_sym_is_freed (load.field %sa_check "str1")))
+                (if (eq.i32 %sa_state 6)
+                  (then (call $chk_error2 "cannot write to immutable stack array" (load.field %sa_check "str1")))
+                  (else))
                 (if (eq.i32 %sa_state 2)
                   (then (call $chk_error2 "dereference of null/uninitialized pointer" (load.field %sa_check "str1")))
                   (else)))
@@ -2158,6 +2167,10 @@
                     (if (eq.i32 (load.field %sf_val_n "tag") 4)
                       (then
                         (let %sf_vname (ptr u8) (load.field %sf_val_n "str1"))
+                        ;; Warn if storing stack-local pointer in struct field
+                        (if (eq.i32 (call $chk_sym_is_freed %sf_vname) 5)
+                          (then (call $chk_warn2 "storing stack-local pointer in struct field (may outlive scope)" %sf_vname))
+                          (else))
                         (let %sf_vidx i32 (call $chk_sym_find_index %sf_vname))
                         (if (ne.i32 %sf_vidx -1)
                           (then
@@ -2232,6 +2245,84 @@
     (if (eq.i32 %tag 26)
       (then
         (return (call $check_body (load.field %n "children") (load.field %n "count"))))
+      (else))
+
+    ;; 35: local-array (fill mode: bool1=0, per-element mode: bool1=1)
+    (if (eq.i32 %tag 35)
+      (then
+        (set $chk_effects (or.i32 $chk_effects 2))
+        (let %la_name (ptr u8) (load.field %n "str1"))
+        (let %la_ptr_type i32 (load.field %n "type2"))
+        (let %la_elem_type i32 (load.field %n "type1"))
+        (let %la_is_const i32 (eq.i32 (load.u8 %la_name) 37))
+        (if (eq.i32 (load.field %n "bool1") 0)
+          (then
+            ;; Fill mode
+            (let %la_count_idx i32 (load.field %n "left"))
+            (if (ne.i32 %la_count_idx -1) (then (call $check_node %la_count_idx)) (else))
+            (let %la_count_val i32 (call $chk_eval_const %la_count_idx))
+            (if (ne.i32 %la_count_val -1)
+              (then
+                (if (le.i32 %la_count_val 0)
+                  (then (call $chk_error "local-array count must be positive"))
+                  (else
+                    (if (gt.i32 %la_count_val 65536)
+                      (then (call $chk_warn "local-array count exceeds 65536 (risk of stack overflow)"))
+                      (else)))))
+              (else))
+            (call $chk_sym_define %la_name %la_ptr_type 0)
+            (call $chk_sym_mark_state %la_name 5)
+            (if (ne.i32 %la_count_val -1)
+              (then (call $chk_sym_set_capacity %la_name %la_count_val))
+              (else))
+            ;; Check init (mandatory for fill mode)
+            (let %la_init_idx i32 (load.field %n "right"))
+            (if (eq.i32 %la_init_idx -1)
+              (then (call $chk_error "local-array requires an initializer value"))
+              (else
+                (let %la_init_type i32 (call $check_node %la_init_idx))
+                (let %lai_cat i32 (call $chk_type_category %la_init_type))
+                (let %lae_cat i32 (call $chk_type_category %la_elem_type))
+                (if (ne.i32 %lai_cat -1)
+                  (then (if (ne.i32 %lae_cat -1)
+                    (then (if (ne.i32 %lai_cat %lae_cat)
+                      (then (call $chk_warn2 "local-array initializer type mismatch for" %la_name))
+                      (else)))
+                    (else)))
+                  (else)))))
+          (else
+            ;; Per-element mode
+            (let %la_vc i32 (load.field %n "count"))
+            (call $chk_sym_define %la_name %la_ptr_type 0)
+            (if (eq.i32 %la_is_const 1)
+              (then (call $chk_sym_mark_state %la_name 6))
+              (else (call $chk_sym_mark_state %la_name 5)))
+            (call $chk_sym_set_capacity %la_name %la_vc)
+            ;; Mark all offsets as written (per-element = fully initialized)
+            (local mut $wi i32 0)
+            (loop $wmark
+              (if (ge.i32 $wi %la_vc) (then (br $wmark))
+                (else
+                  (call $chk_sym_mark_written %la_name $wi)
+                  (set $wi (add.i32 $wi 1)))))
+            ;; Type-check each value
+            (let %lae2_cat i32 (call $chk_type_category %la_elem_type))
+            (let %la_va (ptr i32) (load.field %n "children"))
+            (local mut $vci i32 0)
+            (loop $vcheck
+              (if (ge.i32 $vci %la_vc) (then (br $vcheck))
+                (else
+                  (let %v_type i32 (call $check_node (load.i32 (add.i32 %la_va $vci))))
+                  (let %v_cat i32 (call $chk_type_category %v_type))
+                  (if (ne.i32 %v_cat -1)
+                    (then (if (ne.i32 %lae2_cat -1)
+                      (then (if (ne.i32 %v_cat %lae2_cat)
+                        (then (call $chk_warn2 "local-array element type mismatch for" %la_name))
+                        (else)))
+                      (else)))
+                    (else))
+                  (set $vci (add.i32 $vci 1)))))))
+        (return %la_ptr_type))
       (else))
 
     ;; 27+: param, func, global, type-def, export, extern, module — skip

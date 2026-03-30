@@ -1,0 +1,10 @@
+;; Test: cannot write to immutable (%) stack array
+;; Expected: ERROR — cannot write to immutable stack array '%data'
+
+(module "test_stack_const_write"
+  (func $main
+    (result i32) (effects io mem)
+    (intent "Attempt to write to a const stack array")
+    (local-array %data i32 10 20 30)
+    (store.i32 %data 99)
+    (return 0)))

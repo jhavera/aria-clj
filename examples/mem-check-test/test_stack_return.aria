@@ -1,0 +1,16 @@
+;; Test: returning pointer to stack-local array
+;; Expected: ERROR — returning pointer to stack-local array (dangling after return)
+
+(module "test_stack_return"
+  (func $bad
+    (result (ptr i32)) (effects mem)
+    (intent "Return pointer to stack array — dangling")
+    (local-array $buf i32 8 0)
+    (store.i32 $buf 42)
+    (return $buf))
+  (func $main
+    (result i32) (effects io mem)
+    (intent "Trigger stack return error")
+    (let %p (ptr i32) (call $bad))
+    (print "%d\n" (load.i32 %p))
+    (return 0)))
