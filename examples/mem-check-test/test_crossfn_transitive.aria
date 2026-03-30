@@ -1,0 +1,26 @@
+;; Test: transitive cross-function free (A calls B, B frees param)
+;; Expected: ERROR — double free of '%buf'
+
+(module "test_crossfn_transitive"
+  (func $inner_free
+    (param $p (ptr i32))
+    (effects mem)
+    (intent "Directly frees the pointer")
+    (free $p))
+
+  (func $outer_wrapper
+    (param $q (ptr i32))
+    (effects mem)
+    (intent "Delegates to inner_free — transitively frees param")
+    (call $inner_free $q))
+
+  (func $main
+    (result i32)
+    (effects io mem)
+    (intent "Trigger transitive cross-function double free")
+    (let %buf (ptr i32) (alloc i32 4))
+    (store.i32 %buf 7)
+    (call $outer_wrapper %buf)
+    ;; %buf was freed transitively via $outer_wrapper -> $inner_free
+    (free %buf)
+    (return 0)))

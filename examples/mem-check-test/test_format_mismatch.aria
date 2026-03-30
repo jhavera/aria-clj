@@ -1,0 +1,11 @@
+;; Test: format string argument count mismatch
+;; Expected: ERROR — print: argument count does not match format specifiers
+
+(module "test_format_mismatch"
+  (func $main
+    (result i32)
+    (effects io)
+    (intent "Pass wrong number of arguments to print format string")
+    ;; Format expects 3 args (%d %d %d), but only 2 are provided
+    (print "%d + %d = %d\n" 1 2)
+    (return 0)))

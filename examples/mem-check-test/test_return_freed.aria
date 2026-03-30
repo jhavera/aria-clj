@@ -1,0 +1,18 @@
+;; Test: returning a freed pointer
+;; Expected: ERROR — returning freed pointer '%p'
+
+(module "test_return_freed"
+  (func $bad_return
+    (result (ptr i32))
+    (effects mem)
+    (intent "Allocate, free, then return the freed pointer")
+    (let %p (ptr i32) (alloc i32 4))
+    (free %p)
+    (return %p))
+
+  (func $main
+    (result i32)
+    (effects io mem)
+    (intent "Trigger returning freed pointer")
+    (let %ptr (ptr i32) (call $bad_return))
+    (return 0)))

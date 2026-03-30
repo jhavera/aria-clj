@@ -1,0 +1,24 @@
+;; Test: all accesses within bounds — no false positives
+;; Expected: OK — no errors, no warnings
+
+(module "test_bounds_no_false_positive"
+  (func $main
+    (result i32)
+    (effects io mem)
+    (intent "Access all valid indices of an 8-element array")
+    (let %arr (ptr i32) (alloc i32 8))
+    (store.i32 (add.i32 %arr 0) 10)
+    (store.i32 (add.i32 %arr 1) 20)
+    (store.i32 (add.i32 %arr 2) 30)
+    (store.i32 (add.i32 %arr 3) 40)
+    (store.i32 (add.i32 %arr 4) 50)
+    (store.i32 (add.i32 %arr 5) 60)
+    (store.i32 (add.i32 %arr 6) 70)
+    (store.i32 (add.i32 %arr 7) 80)
+    ;; All offsets 0..7 within capacity 8 → valid
+    (let %sum i32 (add.i32
+      (add.i32 (load.i32 (add.i32 %arr 0)) (load.i32 (add.i32 %arr 7)))
+      (load.i32 (add.i32 %arr 4))))
+    (print "sum = %d\n" %sum)
+    (free %arr)
+    (return 0)))

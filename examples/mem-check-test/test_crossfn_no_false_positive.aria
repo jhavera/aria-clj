@@ -1,0 +1,33 @@
+;; Test: NO false positive — callee reads but does NOT free
+;; Expected: OK — no errors, no warnings
+
+(module "test_crossfn_no_false_positive"
+  (func $sum_array
+    (param $arr (ptr i32))
+    (param $len i32)
+    (result i32)
+    (effects mem div)
+    (intent "Sum elements of an array without freeing it")
+    (local mut $i i32 0)
+    (local mut $total i32 0)
+    (loop $scan
+      (if (ge.i32 $i $len)
+        (then (br $scan))
+        (else
+          (set $total (add.i32 $total (load.i32 (add.i32 $arr $i))))
+          (set $i (add.i32 $i 1)))))
+    (return $total))
+
+  (func $main
+    (result i32)
+    (effects io mem div)
+    (intent "Caller frees after callee only reads — should be clean")
+    (let %arr (ptr i32) (alloc i32 3))
+    (store.i32 (add.i32 %arr 0) 10)
+    (store.i32 (add.i32 %arr 1) 20)
+    (store.i32 (add.i32 %arr 2) 30)
+    (let %result i32 (call $sum_array %arr 3))
+    (print "sum = %d\n" %result)
+    ;; $sum_array does NOT free %arr, so this is correct
+    (free %arr)
+    (return 0)))

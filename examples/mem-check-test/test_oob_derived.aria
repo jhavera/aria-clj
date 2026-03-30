@@ -1,0 +1,18 @@
+;; Test: out-of-bounds via derived pointer
+;; Expected: ERROR — out-of-bounds access on '%tail'
+
+(module "test_oob_derived"
+  (func $main
+    (result i32)
+    (effects io mem)
+    (intent "Derive a sub-pointer and exceed its remaining capacity")
+    (let %arr (ptr i32) (alloc i32 8))
+    ;; %tail points to element 6, remaining capacity = 2
+    (let %tail (ptr i32) (add.i32 %arr 6))
+    (store.i32 (add.i32 %tail 0) 10)
+    (store.i32 (add.i32 %tail 1) 20)
+    ;; Offset 2 >= remaining capacity 2 → out of bounds
+    (let %val i32 (load.i32 (add.i32 %tail 2)))
+    (print "val = %d\n" %val)
+    (free %arr)
+    (return 0)))

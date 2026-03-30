@@ -1,0 +1,11 @@
+;; Test: free of non-pointer variable
+;; Expected: ERROR — free of non-pointer variable '%x'
+
+(module "test_free_non_pointer"
+  (func $main
+    (result i32)
+    (effects io mem)
+    (intent "Trigger free on a non-pointer variable")
+    (let %x i32 42)
+    (free %x)
+    (return 0)))

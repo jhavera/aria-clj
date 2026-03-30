@@ -1,0 +1,12 @@
+;; Test: null/uninitialized pointer dereference
+;; Expected: ERROR — dereference of null/uninitialized pointer '%p'
+
+(module "test_null_deref"
+  (func $main
+    (result i32)
+    (effects io mem)
+    (intent "Trigger null pointer dereference")
+    (let %p (ptr i32) 0)
+    (let %val i32 (load.i32 %p))
+    (print "val = %d\n" %val)
+    (return 0)))

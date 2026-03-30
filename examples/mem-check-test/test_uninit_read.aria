@@ -1,0 +1,17 @@
+;; Test: read from uninitialized memory offset
+;; Expected: WARN — read of potentially uninitialized memory at offset on '%arr'
+
+(module "test_uninit_read"
+  (func $main
+    (result i32)
+    (effects io mem)
+    (intent "Read from an allocated array offset before writing to it")
+    (let %arr (ptr i32) (alloc i32 4))
+    ;; Only write to offsets 0 and 1
+    (store.i32 (add.i32 %arr 0) 10)
+    (store.i32 (add.i32 %arr 1) 20)
+    ;; Read from offset 2 — never written to
+    (let %val i32 (load.i32 (add.i32 %arr 2)))
+    (print "val = %d\n" %val)
+    (free %arr)
+    (return 0)))

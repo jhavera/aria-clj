@@ -15,6 +15,8 @@
   (global mut $sym_scopes  (ptr i32)      0)
   (global mut $sym_states  (ptr i32)      0)
   (global mut $sym_alias   (ptr i32)      0)
+  (global mut $sym_capacity (ptr i32)     0)
+  (global mut $sym_written  (ptr i32)     0)
   (global mut $sym_pos     i32            0)
   (global mut $sym_scope   i32            0)
 
@@ -47,12 +49,24 @@
   (global mut $chk_warns   i32     0)
   (global mut $chk_effects i32     0)
   (global mut $chk_fn_name (ptr u8) 0)
+  (global mut $chk_fn_ret_type i32 -1)
 
   ;; Field state tracking: (var_name, field_name) → alias to sym index
   (global mut $fst_vars    (ptr (ptr u8)) 0)
   (global mut $fst_fields  (ptr (ptr u8)) 0)
   (global mut $fst_alias   (ptr i32)      0)
   (global mut $fst_pos     i32            0)
+
+  ;; Conditional free merge: snapshot buffer for parent states
+  (global mut $snap_states (ptr i32)      0)
+  (global mut $snap_then   (ptr i32)      0)
+
+  ;; Cross-function free inference: bitmask per function (bit N = frees param N)
+  (global mut $fn_frees    (ptr i32)      0)
+  ;; Temporary alias table for free scanning (local var → param index)
+  (global mut $scan_anames (ptr (ptr u8)) 0)
+  (global mut $scan_aparam (ptr i32)      0)
+  (global mut $scan_apos   i32            0)
 
   ;; ── Checker init ───────────────────────────────────────────
 
@@ -66,6 +80,8 @@
     (set $sym_scopes (alloc i32 1024))
     (set $sym_states (alloc i32 1024))
     (set $sym_alias  (alloc i32 1024))
+    (set $sym_capacity (alloc i32 1024))
+    (set $sym_written  (alloc i32 1024))
     (set $sym_pos    0)
     (set $sym_scope  0)
     ;; Function registry (256 entries)
@@ -86,11 +102,20 @@
     (set $chk_warns  0)
     (set $chk_effects 0)
     (set $chk_fn_name 0)
+    (set $chk_fn_ret_type -1)
     ;; Field state tracking
     (set $fst_vars   (alloc (ptr u8) 256))
     (set $fst_fields (alloc (ptr u8) 256))
     (set $fst_alias  (alloc i32 256))
     (set $fst_pos    0)
+    ;; Cross-function free inference
+    ;; Conditional free merge
+    (set $snap_states (alloc i32 1024))
+    (set $snap_then   (alloc i32 1024))
+    (set $fn_frees   (alloc i32 1024))
+    (set $scan_anames (alloc (ptr u8) 16))
+    (set $scan_aparam (alloc i32 16))
+    (set $scan_apos  0)
     ;; Well-known types: i32
     (let %t0 i32 (call $types.type_alloc))
     (let %p0 (ptr $types.TypeInfo) (call $types.type_at %t0))
@@ -163,10 +188,12 @@
     (store.i32 (add.i32 $sym_scopes $sym_pos) $sym_scope)
     (store.i32 (add.i32 $sym_states $sym_pos) 0)
     (store.i32 (add.i32 $sym_alias $sym_pos) -1)
+    (store.i32 (add.i32 $sym_capacity $sym_pos) -1)
+    (store.i32 (add.i32 $sym_written $sym_pos) 0)
     (set $sym_pos (add.i32 $sym_pos 1)))
 
   ;; ── Pointer state tracking ─────────────────────────────────
-  ;; States: 0=alive, 1=freed, 2=null/uninitialized, 3=owns-allocation
+  ;; States: 0=alive, 1=freed, 2=null/uninitialized, 3=owns-allocation, 4=may-be-freed
 
   (func $is_pointer_type
     (param $type_idx i32)
@@ -202,6 +229,127 @@
           (if (call $types.str_eq (load.i32 (add.i32 $sym_names $i)) $name)
             (then (store.i32 (add.i32 $sym_states $i) 1) (return))
             (else (set $i (sub.i32 $i 1))))))))
+
+  ;; ── Bounds checking helpers ─────────────────────────────────
+
+  (func $chk_sym_get_capacity
+    (param $name (ptr u8))
+    (result i32)
+    (effects mem io div)
+    (intent "Get allocation capacity for a variable, -1 if unknown")
+    (local mut $i i32 (sub.i32 $sym_pos 1))
+    (loop $scan
+      (if (lt.i32 $i 0) (then (br $scan))
+        (else
+          (if (call $types.str_eq (load.i32 (add.i32 $sym_names $i)) $name)
+            (then (return (load.i32 (add.i32 $sym_capacity $i))))
+            (else (set $i (sub.i32 $i 1)))))))
+    (return -1))
+
+  (func $chk_sym_set_capacity
+    (param $name (ptr u8))
+    (param $cap i32)
+    (effects mem io div)
+    (intent "Set allocation capacity for a variable")
+    (local mut $i i32 (sub.i32 $sym_pos 1))
+    (loop $scan
+      (if (lt.i32 $i 0) (then (br $scan))
+        (else
+          (if (call $types.str_eq (load.i32 (add.i32 $sym_names $i)) $name)
+            (then (store.i32 (add.i32 $sym_capacity $i) $cap) (return))
+            (else (set $i (sub.i32 $i 1))))))))
+
+  (func $chk_sym_mark_written
+    (param $name (ptr u8))
+    (param $offset i32)
+    (effects mem io div)
+    (intent "Mark an offset as written for a variable (bitmask, offsets 0-30)")
+    (if (lt.i32 $offset 0) (then (return)) (else))
+    (if (gt.i32 $offset 30) (then (return)) (else))
+    (local mut $i i32 (sub.i32 $sym_pos 1))
+    (loop $scan
+      (if (lt.i32 $i 0) (then (br $scan))
+        (else
+          (if (call $types.str_eq (load.i32 (add.i32 $sym_names $i)) $name)
+            (then
+              (let %old i32 (load.i32 (add.i32 $sym_written $i)))
+              (store.i32 (add.i32 $sym_written $i) (or.i32 %old (shl.i32 1 $offset)))
+              (return))
+            (else (set $i (sub.i32 $i 1))))))))
+
+  (func $chk_sym_is_written
+    (param $name (ptr u8))
+    (param $offset i32)
+    (result i32)
+    (effects mem io div)
+    (intent "Check if an offset has been written for a variable. Returns 1 if written, 0 otherwise")
+    (if (lt.i32 $offset 0) (then (return 1)) (else))
+    (if (gt.i32 $offset 30) (then (return 1)) (else))
+    (local mut $i i32 (sub.i32 $sym_pos 1))
+    (loop $scan
+      (if (lt.i32 $i 0) (then (br $scan))
+        (else
+          (if (call $types.str_eq (load.i32 (add.i32 $sym_names $i)) $name)
+            (then
+              (let %mask i32 (load.i32 (add.i32 $sym_written $i)))
+              (if (ne.i32 (and.i32 %mask (shl.i32 1 $offset)) 0)
+                (then (return 1))
+                (else (return 0))))
+            (else (set $i (sub.i32 $i 1)))))))
+    (return 1))
+
+  (func $chk_check_bounds
+    (param $addr_idx i32)
+    (effects mem io div)
+    (intent "Check if pointer arithmetic access is within allocation bounds")
+    (if (eq.i32 $addr_idx -1) (then (return)) (else))
+    (let %addr (ptr $types.ASTNode) (call $types.ast_at $addr_idx))
+    (if (ne.i32 (load.field %addr "tag") 5) (then (return)) (else))
+    ;; Binary op — check for (add.T ptr literal) or (add.T literal ptr)
+    (let %lft_idx i32 (load.field %addr "left"))
+    (let %rgt_idx i32 (load.field %addr "right"))
+    (if (eq.i32 %lft_idx -1) (then (return)) (else))
+    (if (eq.i32 %rgt_idx -1) (then (return)) (else))
+    (let %lft (ptr $types.ASTNode) (call $types.ast_at %lft_idx))
+    (let %rgt (ptr $types.ASTNode) (call $types.ast_at %rgt_idx))
+    ;; Pattern: (add %ptr_var %int_lit)
+    (if (eq.i32 (load.field %lft "tag") 4)
+      (then
+        (if (eq.i32 (load.field %rgt "tag") 0)
+          (then
+            (let %pname (ptr u8) (load.field %lft "str1"))
+            (let %cap i32 (call $chk_sym_get_capacity %pname))
+            (let %offset i32 (cast i64 i32 (load.field %rgt "int1")))
+            (if (ne.i32 %cap -1)
+              (then
+                (if (lt.i32 %offset 0)
+                  (then (call $chk_error2 "negative offset on" %pname))
+                  (else
+                    (if (ge.i32 %offset %cap)
+                      (then (call $chk_error2 "out-of-bounds access on" %pname))
+                      (else)))))
+              (else)))
+          (else)))
+      (else))
+    ;; Pattern: (add %int_lit %ptr_var)
+    (if (eq.i32 (load.field %rgt "tag") 4)
+      (then
+        (if (eq.i32 (load.field %lft "tag") 0)
+          (then
+            (let %pname2 (ptr u8) (load.field %rgt "str1"))
+            (let %cap2 i32 (call $chk_sym_get_capacity %pname2))
+            (let %offset2 i32 (cast i64 i32 (load.field %lft "int1")))
+            (if (ne.i32 %cap2 -1)
+              (then
+                (if (lt.i32 %offset2 0)
+                  (then (call $chk_error2 "negative offset on" %pname2))
+                  (else
+                    (if (ge.i32 %offset2 %cap2)
+                      (then (call $chk_error2 "out-of-bounds access on" %pname2))
+                      (else)))))
+              (else)))
+          (else)))
+      (else)))
 
   ;; ── Field state tracking helpers ─────────────────────────────
 
@@ -357,6 +505,81 @@
                 (else))
               (set $i (sub.i32 $i 1))))))))
 
+  (func $chk_snapshot_states
+    (effects mem div)
+    (intent "Save current parent-scope states into snapshot buffer")
+    (local mut $i i32 0)
+    (loop $copy
+      (if (ge.i32 $i $sym_pos) (then (br $copy))
+        (else
+          (store.i32 (add.i32 $snap_states $i) (load.i32 (add.i32 $sym_states $i)))
+          (set $i (add.i32 $i 1))))))
+
+  (func $chk_save_then_states
+    (effects mem div)
+    (intent "Save states after then-branch into then buffer")
+    (local mut $i i32 0)
+    (loop $copy
+      (if (ge.i32 $i $sym_pos) (then (br $copy))
+        (else
+          (store.i32 (add.i32 $snap_then $i) (load.i32 (add.i32 $sym_states $i)))
+          (set $i (add.i32 $i 1))))))
+
+  (func $chk_restore_states
+    (effects mem div)
+    (intent "Restore parent-scope states from snapshot buffer")
+    (local mut $i i32 0)
+    (loop $copy
+      (if (ge.i32 $i $sym_pos) (then (br $copy))
+        (else
+          (store.i32 (add.i32 $sym_states $i) (load.i32 (add.i32 $snap_states $i)))
+          (set $i (add.i32 $i 1))))))
+
+  (func $chk_merge_branch_states
+    (effects mem div)
+    (intent "Merge then/else branch states: freed in both→1, freed in one→4")
+    (local mut $i i32 0)
+    (loop $merge
+      (if (ge.i32 $i $sym_pos) (then (br $merge))
+        (else
+          (let %orig i32 (load.i32 (add.i32 $snap_states $i)))
+          (let %then_s i32 (load.i32 (add.i32 $snap_then $i)))
+          (let %else_s i32 (load.i32 (add.i32 $sym_states $i)))
+          ;; Only merge if originally alive (state 0 or 3)
+          (if (le.i32 %orig 0)
+            (then
+              (if (eq.i32 %then_s 1)
+                (then
+                  (if (eq.i32 %else_s 1)
+                    (then
+                      ;; Freed in BOTH branches → definitely freed
+                      (store.i32 (add.i32 $sym_states $i) 1))
+                    (else
+                      ;; Freed only in then → may-be-freed
+                      (store.i32 (add.i32 $sym_states $i) 4))))
+                (else
+                  (if (eq.i32 %else_s 1)
+                    (then
+                      ;; Freed only in else → may-be-freed
+                      (store.i32 (add.i32 $sym_states $i) 4))
+                    (else
+                      ;; Not freed in either → keep original
+                      (store.i32 (add.i32 $sym_states $i) %orig))))))
+            (else
+              (if (eq.i32 %orig 3)
+                (then
+                  (if (eq.i32 %then_s 1)
+                    (then
+                      (if (eq.i32 %else_s 1)
+                        (then (store.i32 (add.i32 $sym_states $i) 1))
+                        (else (store.i32 (add.i32 $sym_states $i) 4))))
+                    (else
+                      (if (eq.i32 %else_s 1)
+                        (then (store.i32 (add.i32 $sym_states $i) 4))
+                        (else)))))
+                (else))))
+          (set $i (add.i32 $i 1))))))
+
   ;; ── Symbol lookup ──────────────────────────────────────────
 
   (func $chk_sym_lookup
@@ -508,6 +731,36 @@
     (if (call $types.str_eq $suffix "bool") (then (return $ty_bool)) (else))
     (return $ty_i32))
 
+  ;; ── Format string validation ────────────────────────────────
+
+  (func $chk_count_format_specs
+    (param $fmt (ptr u8))
+    (result i32)
+    (effects mem div)
+    (intent "Count printf-style format specifiers in a string, skipping %%")
+    (if (eq.i32 $fmt 0) (then (return 0)) (else))
+    (local mut $i i32 0)
+    (local mut $count i32 0)
+    (loop $scan
+      (let %c i32 (load.u8 (add.i32 $fmt $i)))
+      (if (eq.i32 %c 0) (then (br $scan))
+        (else
+          (if (eq.i32 %c 37)
+            (then
+              ;; Found '%' — check next char
+              (set $i (add.i32 $i 1))
+              (let %next i32 (load.u8 (add.i32 $fmt $i)))
+              (if (eq.i32 %next 0) (then (br $scan))
+                (else
+                  (if (ne.i32 %next 37)
+                    (then
+                      ;; Not %% — count as a specifier
+                      (set $count (add.i32 $count 1)))
+                    (else)))))
+            (else))
+          (set $i (add.i32 $i 1)))))
+    (return $count))
+
   ;; ── Core: check_node ───────────────────────────────────────
 
   (func $check_body
@@ -555,8 +808,8 @@
             (let %vstate i32 (call $chk_sym_is_freed %vname))
             (if (eq.i32 %vstate 1)
               (then (call $chk_error2 "use of freed pointer" %vname))
-              (else (if (eq.i32 %vstate 2)
-                (then (call $chk_error2 "use of null/uninitialized pointer" %vname))
+              (else (if (eq.i32 %vstate 4)
+                (then (call $chk_warn2 "use of potentially freed pointer" %vname))
                 (else))))))
         (return %vtype))
       (else))
@@ -613,7 +866,21 @@
                   (else (if (eq.i32 %init_tag 17)
                     (then
                       ;; Pointer initialized from alloc → owns allocation
-                      (call $chk_sym_mark_state (load.field %n "str1") 3))
+                      (call $chk_sym_mark_state (load.field %n "str1") 3)
+                      ;; Track allocation capacity if count is a literal
+                      (let %alloc_count_idx i32 (load.field %init_node "left"))
+                      (if (eq.i32 %alloc_count_idx -1)
+                        (then
+                          ;; (alloc T) with no count → single element
+                          (call $chk_sym_set_capacity (load.field %n "str1") 1))
+                        (else
+                          (let %ac_node (ptr $types.ASTNode) (call $types.ast_at %alloc_count_idx))
+                          (if (eq.i32 (load.field %ac_node "tag") 0)
+                            (then
+                              ;; Count is a literal integer
+                              (call $chk_sym_set_capacity (load.field %n "str1")
+                                (cast i64 i32 (load.field %ac_node "int1"))))
+                            (else)))))
                     (else (if (eq.i32 %init_tag 4)
                       (then
                         ;; Pointer initialized from another variable → alias
@@ -622,7 +889,12 @@
                         (if (ne.i32 %alias_idx -1)
                           (then
                             (let %new_idx i32 (sub.i32 $sym_pos 1))
-                            (store.i32 (add.i32 $sym_alias %new_idx) %alias_idx))
+                            (store.i32 (add.i32 $sym_alias %new_idx) %alias_idx)
+                            ;; Propagate capacity from alias source
+                            (let %acap i32 (call $chk_sym_get_capacity %alias_name))
+                            (if (ne.i32 %acap -1)
+                              (then (call $chk_sym_set_capacity (load.field %n "str1") %acap))
+                              (else)))
                           (else)))
                       (else (if (eq.i32 %init_tag 5)
                         (then
@@ -632,6 +904,41 @@
                             (then
                               (let %new_idx2 i32 (sub.i32 $sym_pos 1))
                               (store.i32 (add.i32 $sym_alias %new_idx2) %ptr_op_idx))
+                            (else))
+                          ;; Derive capacity: parent_cap - offset (if both known)
+                          (let %bin_lft i32 (load.field %init_node "left"))
+                          (let %bin_rgt i32 (load.field %init_node "right"))
+                          (if (ne.i32 %bin_lft -1)
+                            (then
+                              (if (ne.i32 %bin_rgt -1)
+                                (then
+                                  (let %bl (ptr $types.ASTNode) (call $types.ast_at %bin_lft))
+                                  (let %br (ptr $types.ASTNode) (call $types.ast_at %bin_rgt))
+                                  ;; (add %ptr LITERAL)
+                                  (if (eq.i32 (load.field %bl "tag") 4)
+                                    (then
+                                      (if (eq.i32 (load.field %br "tag") 0)
+                                        (then
+                                          (let %pcap i32 (call $chk_sym_get_capacity (load.field %bl "str1")))
+                                          (let %poff i32 (cast i64 i32 (load.field %br "int1")))
+                                          (if (ne.i32 %pcap -1)
+                                            (then (call $chk_sym_set_capacity (load.field %n "str1") (sub.i32 %pcap %poff)))
+                                            (else)))
+                                        (else)))
+                                    (else))
+                                  ;; (add LITERAL %ptr)
+                                  (if (eq.i32 (load.field %br "tag") 4)
+                                    (then
+                                      (if (eq.i32 (load.field %bl "tag") 0)
+                                        (then
+                                          (let %pcap2 i32 (call $chk_sym_get_capacity (load.field %br "str1")))
+                                          (let %poff2 i32 (cast i64 i32 (load.field %bl "int1")))
+                                          (if (ne.i32 %pcap2 -1)
+                                            (then (call $chk_sym_set_capacity (load.field %n "str1") (sub.i32 %pcap2 %poff2)))
+                                            (else)))
+                                        (else)))
+                                    (else)))
+                                (else)))
                             (else)))
                         (else)))))))))))
           (else))
@@ -652,6 +959,14 @@
         ;; Setting a global is a mem effect
         (call $chk_check_global_set %sname)
         (call $check_node (load.field %n "left"))
+        ;; Warn if reassigning an owned allocation without freeing
+        (let %old_state i32 (call $chk_sym_is_freed %sname))
+        (if (eq.i32 %old_state 3)
+          (then
+            (if (call $is_pointer_type (call $chk_sym_lookup %sname))
+              (then (call $chk_warn2 "reassigning owned pointer without free (potential leak)" %sname))
+              (else)))
+          (else))
         ;; Reassignment resets freed state and clears alias
         (call $chk_sym_reset_state %sname)
         (let %set_idx i32 (call $chk_sym_find_index %sname))
@@ -697,6 +1012,30 @@
                     (else)))
                 (else))
               (set $ai (add.i32 $ai 1)))))
+        ;; Cross-function: mark args as freed if callee frees that param
+        (let %callee_reg i32 (call $chk_fn_reg_index (load.field %n "str1")))
+        (if (ne.i32 %callee_reg -1)
+          (then
+            (let %fmask i32 (load.i32 (add.i32 $fn_frees %callee_reg)))
+            (if (ne.i32 %fmask 0)
+              (then
+                (local mut $fi i32 0)
+                (loop $fmark
+                  (if (ge.i32 $fi %argc)
+                    (then (br $fmark))
+                    (else
+                      (if (ne.i32 (and.i32 %fmask (shl.i32 1 $fi)) 0)
+                        (then
+                          (let %fa_idx i32 (load.i32 (add.i32 %argv $fi)))
+                          (let %fa_node (ptr $types.ASTNode) (call $types.ast_at %fa_idx))
+                          (if (eq.i32 (load.field %fa_node "tag") 4)
+                            (then
+                              (call $chk_mark_freed_with_aliases (load.field %fa_node "str1")))
+                            (else)))
+                        (else))
+                      (set $fi (add.i32 $fi 1))))))
+              (else)))
+          (else))
         ;; Return callee's result type
         (if (ne.i32 %callee_idx -1)
           (then
@@ -712,15 +1051,32 @@
         (if (ne.i32 %rv -1)
           (then
             (call $check_node %rv)
-            ;; Transfer ownership if returning a var with state=3
             (let %rv_node (ptr $types.ASTNode) (call $types.ast_at %rv))
             (if (eq.i32 (load.field %rv_node "tag") 4)
               (then
                 (let %rname (ptr u8) (load.field %rv_node "str1"))
-                (if (eq.i32 (call $chk_sym_is_freed %rname) 3)
+                (let %rstate i32 (call $chk_sym_is_freed %rname))
+                ;; Transfer ownership if returning a var with state=3
+                (if (eq.i32 %rstate 3)
                   (then (call $chk_sym_reset_state %rname))
-                  (else)))
-              (else)))
+                  (else))
+                ;; Check returning freed or null pointer
+                (if (eq.i32 %rstate 1)
+                  (then (call $chk_error2 "returning freed pointer" %rname))
+                  (else (if (eq.i32 %rstate 2)
+                    (then (call $chk_error2 "returning null/uninitialized pointer" %rname))
+                    (else)))))
+              (else
+                ;; Check returning literal 0 from pointer-returning function
+                (if (eq.i32 (load.field %rv_node "tag") 0)
+                  (then
+                    (if (eq.i32 (cast i64 i32 (load.field %rv_node "int1")) 0)
+                      (then
+                        (if (call $is_pointer_type $chk_fn_ret_type)
+                          (then (call $chk_warn "returning null literal from pointer-returning function"))
+                          (else)))
+                      (else)))
+                  (else)))))
           (else))
         (return $ty_void))
       (else))
@@ -729,16 +1085,23 @@
     (if (eq.i32 %tag 12)
       (then
         (call $check_node (load.field %n "left"))
-        ;; then branch (propagate frees conservatively)
+        ;; Snapshot parent states before branches
+        (call $chk_snapshot_states)
+        ;; then branch
         (call $chk_scope_enter)
         (call $check_body (load.field %n "children") (load.field %n "count"))
         (call $chk_propagate_frees)
         (call $chk_scope_leave)
-        ;; else branch (propagate frees conservatively)
+        ;; Save then-branch result and restore for else
+        (call $chk_save_then_states)
+        (call $chk_restore_states)
+        ;; else branch
         (call $chk_scope_enter)
         (call $check_body (load.field %n "children2") (load.field %n "count2"))
         (call $chk_propagate_frees)
         (call $chk_scope_leave)
+        ;; Merge: freed in both→1, freed in one→4
+        (call $chk_merge_branch_states)
         (return -1))
       (else))
 
@@ -801,10 +1164,13 @@
                       (then (call $chk_error2 "free of non-pointer variable" %fname))
                       (else)))
                   (else))
-                ;; Check double free (only if state is exactly 1=freed)
-                (if (eq.i32 (call $chk_sym_is_freed %fname) 1)
+                ;; Check double free (state=1) or potential double free (state=4)
+                (let %fstate i32 (call $chk_sym_is_freed %fname))
+                (if (eq.i32 %fstate 1)
                   (then (call $chk_error2 "double free of" %fname))
-                  (else))
+                  (else (if (eq.i32 %fstate 4)
+                    (then (call $chk_warn2 "potential double free of" %fname))
+                    (else))))
                 (call $chk_mark_freed_with_aliases %fname))
               (else)))
           (else))
@@ -816,6 +1182,53 @@
       (then
         (set $chk_effects (or.i32 $chk_effects 2))
         (call $check_node (load.field %n "left"))
+        (call $chk_check_bounds (load.field %n "left"))
+        ;; Check null deref at load: if address is a var-ref with state=2
+        (let %load_addr i32 (load.field %n "left"))
+        (if (ne.i32 %load_addr -1)
+          (then
+            (let %la_check (ptr $types.ASTNode) (call $types.ast_at %load_addr))
+            (if (eq.i32 (load.field %la_check "tag") 4)
+              (then
+                (let %la_state i32 (call $chk_sym_is_freed (load.field %la_check "str1")))
+                (if (eq.i32 %la_state 2)
+                  (then (call $chk_error2 "dereference of null/uninitialized pointer" (load.field %la_check "str1")))
+                  (else)))
+              (else)))
+          (else))
+        ;; Check uninitialized read: (load (add %ptr LITERAL))
+        (if (ne.i32 %load_addr -1)
+          (then
+            (let %la (ptr $types.ASTNode) (call $types.ast_at %load_addr))
+            (if (eq.i32 (load.field %la "tag") 5)
+              (then
+                ;; Binary op — check (add %ptr LITERAL)
+                (let %la_l i32 (load.field %la "left"))
+                (let %la_r i32 (load.field %la "right"))
+                (if (ne.i32 %la_l -1)
+                  (then
+                    (if (ne.i32 %la_r -1)
+                      (then
+                        (let %la_ln (ptr $types.ASTNode) (call $types.ast_at %la_l))
+                        (let %la_rn (ptr $types.ASTNode) (call $types.ast_at %la_r))
+                        (if (eq.i32 (load.field %la_ln "tag") 4)
+                          (then
+                            (if (eq.i32 (load.field %la_rn "tag") 0)
+                              (then
+                                (let %roff i32 (cast i64 i32 (load.field %la_rn "int1")))
+                                (let %rcap i32 (call $chk_sym_get_capacity (load.field %la_ln "str1")))
+                                (if (ne.i32 %rcap -1)
+                                  (then
+                                    (if (eq.i32 (call $chk_sym_is_written (load.field %la_ln "str1") %roff) 0)
+                                      (then (call $chk_warn2 "read of potentially uninitialized memory at offset on" (load.field %la_ln "str1")))
+                                      (else)))
+                                  (else)))
+                              (else)))
+                          (else)))
+                      (else)))
+                  (else)))
+              (else)))
+          (else))
         (return (call $chk_suffix_type (load.field %n "str2"))))
       (else))
 
@@ -825,6 +1238,50 @@
         (set $chk_effects (or.i32 $chk_effects 2))
         (call $check_node (load.field %n "left"))
         (call $check_node (load.field %n "right"))
+        (call $chk_check_bounds (load.field %n "left"))
+        ;; Check null deref at store
+        (let %store_addr i32 (load.field %n "left"))
+        (if (ne.i32 %store_addr -1)
+          (then
+            (let %sa_check (ptr $types.ASTNode) (call $types.ast_at %store_addr))
+            (if (eq.i32 (load.field %sa_check "tag") 4)
+              (then
+                (let %sa_state i32 (call $chk_sym_is_freed (load.field %sa_check "str1")))
+                (if (eq.i32 %sa_state 2)
+                  (then (call $chk_error2 "dereference of null/uninitialized pointer" (load.field %sa_check "str1")))
+                  (else)))
+              (else)))
+          (else))
+        ;; Track written offset: (store (add %ptr LITERAL) val)
+        (if (ne.i32 %store_addr -1)
+          (then
+            (let %sa (ptr $types.ASTNode) (call $types.ast_at %store_addr))
+            (if (eq.i32 (load.field %sa "tag") 5)
+              (then
+                (let %sa_l i32 (load.field %sa "left"))
+                (let %sa_r i32 (load.field %sa "right"))
+                (if (ne.i32 %sa_l -1)
+                  (then
+                    (if (ne.i32 %sa_r -1)
+                      (then
+                        (let %sa_ln (ptr $types.ASTNode) (call $types.ast_at %sa_l))
+                        (let %sa_rn (ptr $types.ASTNode) (call $types.ast_at %sa_r))
+                        (if (eq.i32 (load.field %sa_ln "tag") 4)
+                          (then
+                            (if (eq.i32 (load.field %sa_rn "tag") 0)
+                              (then
+                                (call $chk_sym_mark_written (load.field %sa_ln "str1")
+                                  (cast i64 i32 (load.field %sa_rn "int1"))))
+                              (else)))
+                          (else)))
+                      (else)))
+                  (else)))
+              (else
+                ;; Direct store (store %ptr val) — mark offset 0
+                (if (eq.i32 (load.field %sa "tag") 4)
+                  (then (call $chk_sym_mark_written (load.field %sa "str1") 0))
+                  (else)))))
+          (else))
         (return -1))
       (else))
 
@@ -887,6 +1344,18 @@
     (if (eq.i32 %tag 23)
       (then
         (call $check_node (load.field %n "left"))
+        ;; Warn on unsafe int<->pointer casts
+        (let %from_ptr i32 (call $is_pointer_type (load.field %n "type1")))
+        (let %to_ptr i32 (call $is_pointer_type (load.field %n "type2")))
+        (if (eq.i32 %from_ptr 0)
+          (then
+            (if (eq.i32 %to_ptr 1)
+              (then (call $chk_warn "unsafe cast: integer to pointer"))
+              (else)))
+          (else
+            (if (eq.i32 %to_ptr 0)
+              (then (call $chk_warn "unsafe cast: pointer to integer"))
+              (else))))
         (return (load.field %n "type2")))
       (else))
 
@@ -903,6 +1372,15 @@
             (else
               (call $check_node (load.i32 (add.i32 %pv $pi)))
               (set $pi (add.i32 $pi 1)))))
+        ;; Validate format string arg count
+        (let %fmt (ptr u8) (load.field %n "str1"))
+        (if (ne.i32 %fmt 0)
+          (then
+            (let %expected i32 (call $chk_count_format_specs %fmt))
+            (if (ne.i32 %expected %pc)
+              (then (call $chk_error "print: argument count does not match format specifiers"))
+              (else)))
+          (else))
         (return -1))
       (else))
 
@@ -962,6 +1440,7 @@
     (intent "Type-check a single function definition")
     (let %fn (ptr $types.ASTNode) (call $types.ast_at $func_aidx))
     (set $chk_fn_name (load.field %fn "str1"))
+    (set $chk_fn_ret_type (load.field %fn "type1"))
     (set $chk_effects 0)
     ;; Verify intent annotation is present
     (if (eq.i32 (load.field %fn "str2") 0)
@@ -1018,6 +1497,374 @@
     ;; Verify effects
     (call $chk_verify_effects $func_aidx))
 
+  ;; ── Cross-function free inference ────────────────────────────
+
+  (func $chk_fn_reg_index
+    (param $name (ptr u8))
+    (result i32)
+    (effects mem io div)
+    (intent "Find function registry index by name, or -1")
+    (local mut $i i32 (sub.i32 $fn_pos 1))
+    (loop $scan
+      (if (lt.i32 $i 0) (then (br $scan))
+        (else
+          (if (call $types.str_eq (load.i32 (add.i32 $fn_names $i)) $name)
+            (then (return $i))
+            (else (set $i (sub.i32 $i 1)))))))
+    (return -1))
+
+  (func $chk_fn_param_index
+    (param $fn_aidx i32)
+    (param $name (ptr u8))
+    (result i32)
+    (effects mem io div)
+    (intent "Find 0-based parameter index matching name in function, or -1")
+    (let %fn (ptr $types.ASTNode) (call $types.ast_at $fn_aidx))
+    (let %pcount i32 (cast i64 i32 (load.field %fn "int1")))
+    (let %arr (ptr i32) (load.field %fn "children"))
+    (local mut $i i32 0)
+    (loop $scan
+      (if (ge.i32 $i %pcount) (then (br $scan))
+        (else
+          (let %p (ptr $types.ASTNode) (call $types.ast_at (load.i32 (add.i32 %arr $i))))
+          (if (call $types.str_eq (load.field %p "str1") $name)
+            (then (return $i))
+            (else (set $i (add.i32 $i 1)))))))
+    (return -1))
+
+  (func $scan_check_param_or_alias
+    (param $fn_aidx i32)
+    (param $name (ptr u8))
+    (result i32)
+    (effects mem io div)
+    (intent "Check if name is a param or alias of a param. Returns param index or -1")
+    ;; Direct param check
+    (let %pidx i32 (call $chk_fn_param_index $fn_aidx $name))
+    (if (ne.i32 %pidx -1) (then (return %pidx)) (else))
+    ;; Alias table check
+    (local mut $i i32 0)
+    (loop $scan
+      (if (ge.i32 $i $scan_apos) (then (br $scan))
+        (else
+          (if (call $types.str_eq (load.i32 (add.i32 $scan_anames $i)) $name)
+            (then (return (load.i32 (add.i32 $scan_aparam $i))))
+            (else (set $i (add.i32 $i 1)))))))
+    (return -1))
+
+  (func $scan_record_alias
+    (param $local_name (ptr u8))
+    (param $param_idx i32)
+    (effects mem)
+    (intent "Record that a local variable is an alias for a function parameter")
+    (if (ge.i32 $scan_apos 16) (then (return)) (else))
+    (store.i32 (add.i32 $scan_anames $scan_apos) $local_name)
+    (store.i32 (add.i32 $scan_aparam $scan_apos) $param_idx)
+    (set $scan_apos (add.i32 $scan_apos 1)))
+
+  (func $scan_body_frees
+    (param $arr (ptr i32))
+    (param $count i32)
+    (param $fn_aidx i32)
+    (param $fn_reg i32)
+    (effects mem io div)
+    (intent "Iterate body children scanning for parameter frees")
+    (local mut $i i32 0)
+    (loop $body
+      (if (ge.i32 $i $count) (then (br $body))
+        (else
+          (call $scan_node_frees (load.i32 (add.i32 $arr $i)) $fn_aidx $fn_reg)
+          (set $i (add.i32 $i 1))))))
+
+  (func $scan_node_frees
+    (param $nidx i32)
+    (param $fn_aidx i32)
+    (param $fn_reg i32)
+    (effects mem io div)
+    (intent "Recursively scan AST node for frees of function parameters")
+    (if (eq.i32 $nidx -1) (then (return)) (else))
+    (let %n (ptr $types.ASTNode) (call $types.ast_at $nidx))
+    (let %tag i32 (load.field %n "tag"))
+
+    ;; 18: free — check if target is a param or alias
+    (if (eq.i32 %tag 18)
+      (then
+        (let %ft i32 (load.field %n "left"))
+        (if (ne.i32 %ft -1)
+          (then
+            (let %ftn (ptr $types.ASTNode) (call $types.ast_at %ft))
+            (if (eq.i32 (load.field %ftn "tag") 4)
+              (then
+                (let %pidx i32 (call $scan_check_param_or_alias $fn_aidx (load.field %ftn "str1")))
+                (if (ne.i32 %pidx -1)
+                  (then
+                    ;; Set bit pidx in fn_frees[fn_reg]
+                    (let %old i32 (load.i32 (add.i32 $fn_frees $fn_reg)))
+                    (store.i32 (add.i32 $fn_frees $fn_reg)
+                      (or.i32 %old (shl.i32 1 %pidx))))
+                  (else)))
+              (else)))
+          (else))
+        (return))
+      (else))
+
+    ;; 8: let — track aliases of params
+    (if (eq.i32 %tag 8)
+      (then
+        (let %init i32 (load.field %n "left"))
+        (if (ne.i32 %init -1)
+          (then
+            (let %init_n (ptr $types.ASTNode) (call $types.ast_at %init))
+            (if (eq.i32 (load.field %init_n "tag") 4)
+              (then
+                ;; Init is a var-ref: check if it's a param or alias
+                (let %ap i32 (call $scan_check_param_or_alias $fn_aidx (load.field %init_n "str1")))
+                (if (ne.i32 %ap -1)
+                  (then (call $scan_record_alias (load.field %n "str1") %ap))
+                  (else)))
+              (else
+                ;; Recurse into init expression (might contain nested calls)
+                (call $scan_node_frees %init $fn_aidx $fn_reg))))
+          (else))
+        (return))
+      (else))
+
+    ;; 12: if — recurse into condition, then, else
+    (if (eq.i32 %tag 12)
+      (then
+        (call $scan_node_frees (load.field %n "left") $fn_aidx $fn_reg)
+        (call $scan_body_frees (load.field %n "children") (load.field %n "count") $fn_aidx $fn_reg)
+        (call $scan_body_frees (load.field %n "children2") (load.field %n "count2") $fn_aidx $fn_reg)
+        (return))
+      (else))
+
+    ;; 13: loop, 14: block, 26: seq — recurse into children
+    (if (eq.i32 %tag 13)
+      (then
+        (call $scan_body_frees (load.field %n "children") (load.field %n "count") $fn_aidx $fn_reg)
+        (return))
+      (else))
+    (if (eq.i32 %tag 14)
+      (then
+        (call $scan_body_frees (load.field %n "children") (load.field %n "count") $fn_aidx $fn_reg)
+        (return))
+      (else))
+    (if (eq.i32 %tag 26)
+      (then
+        (call $scan_body_frees (load.field %n "children") (load.field %n "count") $fn_aidx $fn_reg)
+        (return))
+      (else))
+
+    ;; 10: call — recurse into argument expressions
+    (if (eq.i32 %tag 10)
+      (then
+        (let %ac i32 (load.field %n "count"))
+        (let %av (ptr i32) (load.field %n "children"))
+        (local mut $ai i32 0)
+        (loop $cargs
+          (if (ge.i32 $ai %ac) (then (br $cargs))
+            (else
+              (call $scan_node_frees (load.i32 (add.i32 %av $ai)) $fn_aidx $fn_reg)
+              (set $ai (add.i32 $ai 1)))))
+        (return))
+      (else)))
+
+  ;; ── Round 1: Direct free scan ─────────────────────────────
+
+  (func $scan_round1
+    (effects mem io div)
+    (intent "Scan all functions for direct frees of parameters")
+    (local mut $fi i32 0)
+    (loop $funcs
+      (if (ge.i32 $fi $fn_pos) (then (br $funcs))
+        (else
+          (let %fn_aidx i32 (load.i32 (add.i32 $fn_ast $fi)))
+          (let %fn (ptr $types.ASTNode) (call $types.ast_at %fn_aidx))
+          ;; Only scan regular functions (tag 28), not externs
+          (if (eq.i32 (load.field %fn "tag") 28)
+            (then
+              ;; Reset alias table for this function
+              (set $scan_apos 0)
+              ;; Scan body (children after params)
+              (let %pcount i32 (cast i64 i32 (load.field %fn "int1")))
+              (let %total i32 (load.field %fn "count"))
+              (let %arr (ptr i32) (load.field %fn "children"))
+              (let %body_arr (ptr i32) (add.i32 %arr %pcount))
+              (let %body_count i32 (sub.i32 %total %pcount))
+              (call $scan_body_frees %body_arr %body_count %fn_aidx $fi))
+            (else))
+          (set $fi (add.i32 $fi 1))))))
+
+  ;; ── Round 2: Transitive call-chain propagation ────────────
+
+  (func $scan_call_frees
+    (param $nidx i32)
+    (param $fn_aidx i32)
+    (param $fn_reg i32)
+    (param $changed (ptr i32))
+    (effects mem io div)
+    (intent "Scan node for calls that transitively free params")
+    (if (eq.i32 $nidx -1) (then (return)) (else))
+    (let %n (ptr $types.ASTNode) (call $types.ast_at $nidx))
+    (let %tag i32 (load.field %n "tag"))
+
+    ;; 10: call — check if callee frees any arg that is our param
+    (if (eq.i32 %tag 10)
+      (then
+        (let %callee_name (ptr u8) (load.field %n "str1"))
+        (let %creg i32 (call $chk_fn_reg_index %callee_name))
+        (if (ne.i32 %creg -1)
+          (then
+            (let %cmask i32 (load.i32 (add.i32 $fn_frees %creg)))
+            (if (ne.i32 %cmask 0)
+              (then
+                ;; Callee frees some params — check if our params are passed
+                (let %ac i32 (load.field %n "count"))
+                (let %av (ptr i32) (load.field %n "children"))
+                (local mut $ai i32 0)
+                (loop $cargs
+                  (if (ge.i32 $ai %ac) (then (br $cargs))
+                    (else
+                      ;; Check if callee frees this arg position
+                      (if (ne.i32 (and.i32 %cmask (shl.i32 1 $ai)) 0)
+                        (then
+                          ;; Yes — check if arg is one of our params
+                          (let %arg_n (ptr $types.ASTNode) (call $types.ast_at (load.i32 (add.i32 %av $ai))))
+                          (if (eq.i32 (load.field %arg_n "tag") 4)
+                            (then
+                              (let %pidx i32 (call $chk_fn_param_index $fn_aidx (load.field %arg_n "str1")))
+                              (if (ne.i32 %pidx -1)
+                                (then
+                                  (let %old i32 (load.i32 (add.i32 $fn_frees $fn_reg)))
+                                  (let %bit i32 (shl.i32 1 %pidx))
+                                  (if (eq.i32 (and.i32 %old %bit) 0)
+                                    (then
+                                      ;; New bit — mark changed
+                                      (store.i32 (add.i32 $fn_frees $fn_reg) (or.i32 %old %bit))
+                                      (store.i32 $changed 1))
+                                    (else)))
+                                (else)))
+                            (else)))
+                        (else))
+                      (set $ai (add.i32 $ai 1))))))
+              (else)))
+          (else))
+        ;; Also recurse into argument expressions
+        (let %ac2 i32 (load.field %n "count"))
+        (let %av2 (ptr i32) (load.field %n "children"))
+        (local mut $ai2 i32 0)
+        (loop $rargs
+          (if (ge.i32 $ai2 %ac2) (then (br $rargs))
+            (else
+              (call $scan_call_frees (load.i32 (add.i32 %av2 $ai2)) $fn_aidx $fn_reg $changed)
+              (set $ai2 (add.i32 $ai2 1)))))
+        (return))
+      (else))
+
+    ;; Recurse into containers
+    (if (eq.i32 %tag 12)
+      (then
+        (call $scan_call_frees (load.field %n "left") $fn_aidx $fn_reg $changed)
+        (let %tc i32 (load.field %n "count"))
+        (let %ta (ptr i32) (load.field %n "children"))
+        (local mut $ti i32 0)
+        (loop $then_l
+          (if (ge.i32 $ti %tc) (then (br $then_l))
+            (else
+              (call $scan_call_frees (load.i32 (add.i32 %ta $ti)) $fn_aidx $fn_reg $changed)
+              (set $ti (add.i32 $ti 1)))))
+        (let %ec i32 (load.field %n "count2"))
+        (let %ea (ptr i32) (load.field %n "children2"))
+        (local mut $ei i32 0)
+        (loop $else_l
+          (if (ge.i32 $ei %ec) (then (br $else_l))
+            (else
+              (call $scan_call_frees (load.i32 (add.i32 %ea $ei)) $fn_aidx $fn_reg $changed)
+              (set $ei (add.i32 $ei 1)))))
+        (return))
+      (else))
+    (if (eq.i32 %tag 13)
+      (then
+        (let %lc i32 (load.field %n "count"))
+        (let %la (ptr i32) (load.field %n "children"))
+        (local mut $li i32 0)
+        (loop $loop_l
+          (if (ge.i32 $li %lc) (then (br $loop_l))
+            (else
+              (call $scan_call_frees (load.i32 (add.i32 %la $li)) $fn_aidx $fn_reg $changed)
+              (set $li (add.i32 $li 1)))))
+        (return))
+      (else))
+    (if (eq.i32 %tag 14)
+      (then
+        (let %bc i32 (load.field %n "count"))
+        (let %ba (ptr i32) (load.field %n "children"))
+        (local mut $bi i32 0)
+        (loop $block_l
+          (if (ge.i32 $bi %bc) (then (br $block_l))
+            (else
+              (call $scan_call_frees (load.i32 (add.i32 %ba $bi)) $fn_aidx $fn_reg $changed)
+              (set $bi (add.i32 $bi 1)))))
+        (return))
+      (else))
+    (if (eq.i32 %tag 26)
+      (then
+        (let %sc i32 (load.field %n "count"))
+        (let %sa (ptr i32) (load.field %n "children"))
+        (local mut $si i32 0)
+        (loop $seq_l
+          (if (ge.i32 $si %sc) (then (br $seq_l))
+            (else
+              (call $scan_call_frees (load.i32 (add.i32 %sa $si)) $fn_aidx $fn_reg $changed)
+              (set $si (add.i32 $si 1)))))
+        (return))
+      (else))
+    ;; 8: let — recurse into init expression
+    (if (eq.i32 %tag 8)
+      (then
+        (call $scan_call_frees (load.field %n "left") $fn_aidx $fn_reg $changed)
+        (return))
+      (else)))
+
+  (func $scan_round2
+    (effects mem io div)
+    (intent "Iterate to fixed point: propagate frees through call chains")
+    (let %changed (ptr i32) (alloc i32 1))
+    (loop $fixed
+      (store.i32 %changed 0)
+      (local mut $fi i32 0)
+      (loop $funcs
+        (if (ge.i32 $fi $fn_pos) (then (br $funcs))
+          (else
+            (let %fn_aidx i32 (load.i32 (add.i32 $fn_ast $fi)))
+            (let %fn (ptr $types.ASTNode) (call $types.ast_at %fn_aidx))
+            (if (eq.i32 (load.field %fn "tag") 28)
+              (then
+                (let %pcount i32 (cast i64 i32 (load.field %fn "int1")))
+                (let %total i32 (load.field %fn "count"))
+                (let %arr (ptr i32) (load.field %fn "children"))
+                (let %body_arr (ptr i32) (add.i32 %arr %pcount))
+                (let %body_count i32 (sub.i32 %total %pcount))
+                (local mut $bi i32 0)
+                (loop $body
+                  (if (ge.i32 $bi %body_count) (then (br $body))
+                    (else
+                      (call $scan_call_frees (load.i32 (add.i32 %body_arr $bi)) %fn_aidx $fi %changed)
+                      (set $bi (add.i32 $bi 1))))))
+              (else))
+            (set $fi (add.i32 $fi 1)))))
+      (if (eq.i32 (load.i32 %changed) 0)
+        (then (br $fixed))
+        (else)))
+    (free %changed))
+
+  ;; ── Orchestrator ──────────────────────────────────────────
+
+  (func $chk_scan_frees
+    (effects mem io div)
+    (intent "Infer which function params are freed, using multi-round analysis")
+    (call $scan_round1)
+    (call $scan_round2))
+
   ;; ── Module checking ────────────────────────────────────────
 
   (func $check_module
@@ -1066,6 +1913,9 @@
             (then (call $chk_fn_register (load.field %en "str1") %ext_idx))
             (else))
           (set $ei (add.i32 $ei 1)))))
+
+    ;; Pass 1.5: Infer which params each function frees
+    (call $chk_scan_frees)
 
     ;; Pass 2: Check each function body
     (set $ci 0)

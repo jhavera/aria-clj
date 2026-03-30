@@ -1,0 +1,13 @@
+;; Test: double-free
+;; Expected: ERROR — double free of '%p'
+
+(module "test_double_free"
+  (func $main
+    (result i32)
+    (effects io mem)
+    (intent "Trigger double free on a pointer")
+    (let %p (ptr i32) (alloc i32 8))
+    (store.i32 %p 10)
+    (free %p)
+    (free %p)
+    (return 0)))

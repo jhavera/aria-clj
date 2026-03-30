@@ -9,11 +9,9 @@ The reference ARIA-IR compiler is **ariac** — a self-hosted compiler written i
 ariac provides capabilities beyond the Clojure bootstrap:
 
 - **Multi-module programs** with `(import "path.aria")` and qualified access (`$module.func`)
-- **Compile-time memory safety**: use-after-free, double-free, null deref, leak detection, pointer arithmetic aliases, and struct field dangling pointer tracking (8 detection types)
+- **Compile-time memory safety**: use-after-free, double-free, null deref, leak detection, pointer arithmetic aliases, struct field dangling pointers, cross-function free inference, bounds checking, return value safety, leak on reassignment, unsafe cast detection, format string validation, conditional free precision, and uninitialized memory detection (24 test cases — see `examples/mem-check-test/`)
 - **Mandatory intent annotations** enforced by the checker
 - **Error positions** with line and column numbers
-
-The only known gap in memory safety is **cross-function free**: if a callee internally frees a pointer argument, the caller cannot detect this without ownership annotations on parameters, which would compromise ARIA's simplicity.
 
 ## Prerequisites
 
@@ -208,6 +206,7 @@ ariac examples/import_demo/main.aria --run    # Multi-module example
 | `math_demo.aria` | Multiple algorithms (GCD, factorial, primality, fast exponentiation), type casting |
 | `float_demo.aria` | Float arithmetic, pi, temperature conversion, int-to-float cast |
 | `bootstrap_demo.aria` | Strings as `(ptr u8)`, externs, file I/O, CLI args |
+| `mem-check-test/` | Memory safety checker test suite (12 intentional faults) |
 
 Run any example with the Clojure compiler:
 
@@ -276,7 +275,7 @@ The self-hosted compiler implements the same pipeline in ARIA-IR itself, split i
 | **Types** | `aria-src/ariac/types.aria` | Struct types, pools, accessors, module registry |
 | **Reader** | `aria-src/ariac/reader.aria` | S-expression parser |
 | **Parser** | `aria-src/ariac/parser.aria` | AST construction from SExp tree |
-| **Checker** | `aria-src/ariac/checker.aria` | Scoping, mutability, effect verification |
+| **Checker** | `aria-src/ariac/checker.aria` | Scoping, mutability, effect verification, memory safety analysis |
 | **Codegen** | `aria-src/ariac/codegen.aria` | C99 emission (single + multi-module) |
 | **Main** | `aria-src/ariac/main.aria` | CLI, module resolver, pipeline orchestration |
 

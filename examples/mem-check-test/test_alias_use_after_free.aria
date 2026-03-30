@@ -1,0 +1,16 @@
+;; Test: use-after-free through alias
+;; Expected: ERROR — use of freed pointer '%alias'
+
+(module "test_alias_use_after_free"
+  (func $main
+    (result i32)
+    (effects io mem)
+    (intent "Trigger use-after-free via pointer alias")
+    (let %p (ptr i32) (alloc i32 4))
+    (store.i32 %p 77)
+    (let %alias (ptr i32) %p)
+    (free %p)
+    ;; %alias points to freed memory
+    (let %val i32 (load.i32 %alias))
+    (print "val = %d\n" %val)
+    (return 0)))

@@ -1,0 +1,11 @@
+;; Test: unsafe integer-to-pointer cast
+;; Expected: WARN — unsafe cast: integer to pointer
+
+(module "test_unsafe_cast"
+  (func $main
+    (result i32)
+    (effects io mem)
+    (intent "Cast an integer to a pointer type")
+    (let %addr i32 12345)
+    (let %p (ptr i32) (cast i32 (ptr i32) %addr))
+    (return 0)))

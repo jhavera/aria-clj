@@ -1,0 +1,21 @@
+;; Test: cross-function double free
+;; Callee frees the pointer, caller frees it again.
+;; Expected: ERROR — double free of '%buf'
+
+(module "test_crossfn_double_free"
+  (func $consume
+    (param $p (ptr i32))
+    (effects mem)
+    (intent "Takes ownership and frees the pointer")
+    (free $p))
+
+  (func $main
+    (result i32)
+    (effects io mem)
+    (intent "Trigger cross-function double free")
+    (let %buf (ptr i32) (alloc i32 4))
+    (store.i32 %buf 42)
+    (call $consume %buf)
+    ;; %buf was freed inside $consume — this is a double free
+    (free %buf)
+    (return 0)))
