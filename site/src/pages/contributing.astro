@@ -50,8 +50,8 @@ import Base from '../layouts/Base.astro';
               </tr>
               <tr class="border-b border-border/50">
                 <td class="py-3 pr-4">JVM Bytecode Backend</td>
-                <td class="py-3 pr-4"><span class="text-[#ffa657] font-mono">planned</span></td>
-                <td class="py-3">ARIA-JVM: compile to .class files</td>
+                <td class="py-3 pr-4"><span class="text-[#7ee787] font-mono">complete</span></td>
+                <td class="py-3">ARIA-JVM: compiles to .class files and runnable JARs. No gcc required -- the JVM installed to run aria-clj is also what runs the output. Bytecode generation via ASM (org.ow2.asm). --backend jvm --emit-class for individual class files, --emit-jar for a runnable JAR with manifest. (intent "...") annotations emitted as @com.ariacompiler.Intent with @Retention(RUNTIME), queryable via reflection -- the runtime foundation for Layer 4. Pointer types modeled via AriaMemory (flat int array heap). All three example programs compile and run. Shipped in PRs #10, #11, #13.</td>
               </tr>
               <tr class="border-b border-border/50">
                 <td class="py-3 pr-4">WASM Backend</td>
@@ -65,8 +65,18 @@ import Base from '../layouts/Base.astro';
               </tr>
               <tr class="border-b border-border/50">
                 <td class="py-3 pr-4">Intent Verification</td>
-                <td class="py-3 pr-4"><span class="text-[#ffa657] font-mono">planned</span></td>
-                <td class="py-3">Layer 4: verify code matches intent</td>
+                <td class="py-3 pr-4"><span class="text-[#3fb950] font-mono">complete</span></td>
+                <td class="py-3">Layer 4: compile, run, and verify code matches intent via Claude API. Dynamic verification via compile-and-run. Merged in PR #16. Mandatory (intent ...) annotation enforced by the checker on all functions.</td>
+              </tr>
+              <tr class="border-b border-border/50">
+                <td class="py-3 pr-4">Self-Hosting (ariac)</td>
+                <td class="py-3 pr-4"><span class="text-[#7ee787] font-mono">complete</span></td>
+                <td class="py-3">ariac: ARIA-IR compiler written in ARIA-IR, now structured as 6 modules (~5220 LOC total): types.aria, reader.aria, parser.aria, checker.aria, codegen.aria, main.aria. Compile-time memory safety with 8 detection types. Module import system built in. Compiles itself from its own 6 modules. Shipped in PRs #17, #20. <a href="https://github.com/arkaitz-dev" target="_blank" rel="noopener" class="text-accent hover:underline">@arkaitz-dev</a></td>
+              </tr>
+              <tr class="border-b border-border/50">
+                <td class="py-3 pr-4">Module Import System</td>
+                <td class="py-3 pr-4"><span class="text-[#7ee787] font-mono">complete</span></td>
+                <td class="py-3">(import "math.aria") with qualified access ($module.func). Path resolution relative to importing file. Circular import detection. Export enforcement. Single C output with module__func prefixed names. Closes #4. Shipped in PR #20. <a href="https://github.com/arkaitz-dev" target="_blank" rel="noopener" class="text-accent hover:underline">@arkaitz-dev</a></td>
               </tr>
               <tr class="border-b border-border/50">
                 <td class="py-3 pr-4">Standard Library</td>

@@ -45,7 +45,7 @@ import Base from '../layouts/Base.astro';
           <button data-tab="source" class="tab-btn px-4 py-2 text-sm font-medium border-b-2 border-transparent text-muted hover:text-text transition-colors" >Source</button>
           <button data-tab="uberjar" class="tab-btn px-4 py-2 text-sm font-medium border-b-2 border-accent text-accent">Uberjar</button>
           <button data-tab="wasm" class="tab-btn px-4 py-2 text-sm font-medium border-b-2 border-transparent text-muted hover:text-text transition-colors">WASM</button>
-          <button data-tab="native" class="tab-btn px-4 py-2 text-sm font-medium border-b-2 border-transparent text-muted/50 cursor-not-allowed">Native Binary <span class="text-xs ml-1 opacity-60">v0.2</span></button>
+          <button data-tab="native" class="tab-btn px-4 py-2 text-sm font-medium border-b-2 border-transparent text-muted/50 cursor-not-allowed">Native Binary <span class="text-xs ml-1 opacity-60">coming soon</span></button>
         </div>
 
         <!-- Source tab -->
@@ -61,6 +61,9 @@ clj -M:run examples/fibonacci.aria --emit-c
 
 <span class="text-muted"># Full pipeline: parse, check, compile, execute</span>
 clj -M:run examples/fibonacci.aria --run</code></pre>
+          <pre><code><span class="text-muted"># Verify intent annotations against observed behavior</span>
+clj -M:run examples/fibonacci.aria --verify</code></pre>
+          <p class="text-muted text-sm">Requires ANTHROPIC_API_KEY. Compiles each function with test inputs, runs it, and asks the Claude API whether the output matches the declared intent.</p>
         </div>
 
         <!-- Uberjar tab (default) -->
@@ -98,7 +101,7 @@ clj -M:run examples/fibonacci.aria --backend wasm --optimize -o fib.wasm</code><
         <!-- Native tab (disabled) -->
         <div id="tab-native" class="tab-panel hidden pt-6">
           <div class="bg-surface border border-border rounded-lg p-8 text-center">
-            <p class="text-muted">GraalVM native binaries are planned for v0.2.</p>
+            <p class="text-muted">GraalVM native binaries are planned for a future release.</p>
             <p class="text-muted text-sm mt-2">This will provide sub-100ms startup with zero dependencies.</p>
           </div>
         </div>
@@ -119,9 +122,37 @@ clj -M:run examples/fibonacci.aria --backend wasm --optimize -o fib.wasm</code><
 
   <span class="text-muted">(</span><span class="text-[#d2a8ff]">export</span> <span class="text-accent">$main</span><span class="text-muted">))</span></code></pre>
 
-        <p class="text-muted my-4">Compile and run:</p>
+        <p class="text-muted my-4">Compile and run with the Clojure CLI:</p>
         <pre><code>$ clj -M:run hello.aria --run
 Hello, world!</code></pre>
+
+        <p class="text-muted my-4">Or, if you have the downloaded JAR and only need Java:</p>
+        <pre><code>$ java -jar aria-clj.jar hello.aria --run
+Hello, world!</code></pre>
+      </section>
+
+      <!-- ariac: Self-Hosted Compiler -->
+      <section class="mb-12">
+        <h2 class="font-mono text-xl font-bold mb-4">ariac: Self-Hosted Compiler</h2>
+        <p class="text-muted mb-4">ariac is the reference ARIA-IR compiler, written in ARIA-IR itself across 6 modules (~5220 LOC). It supports multi-module programs, compile-time memory safety, and mandatory intent annotations. The Clojure implementation serves as the initial bootstrap only.</p>
+        <p class="text-muted mb-4">Two-stage build:</p>
+        <pre><code><span class="text-muted"># Stage 1: build ariac-bootstrap from the Clojure compiler</span>
+clojure -M:run aria-src/ariac-bootstrap.aria --emit-c -o /tmp/bootstrap.c
+gcc -std=c99 -fwrapv -o ariac-bootstrap /tmp/bootstrap.c -lm
+
+<span class="text-muted"># Stage 2: build ariac from ariac-bootstrap</span>
+./ariac-bootstrap aria-src/ariac/main.aria --emit-c -o /tmp/ariac.c
+gcc -std=c99 -fwrapv -o ariac /tmp/ariac.c -lm</code></pre>
+        <p class="text-muted my-4">Use ariac to compile any ARIA program:</p>
+        <pre><code><span class="text-muted"># Single-module program</span>
+./ariac examples/fibonacci.aria --run
+
+<span class="text-muted"># Multi-module program</span>
+./ariac examples/import_demo/main.aria --run
+
+<span class="text-muted"># Verify bootstrap: ariac compiles itself</span>
+./ariac aria-src/ariac/main.aria -o ariac2
+./ariac2 examples/fibonacci.aria --run</code></pre>
       </section>
 
       <!-- Troubleshooting -->

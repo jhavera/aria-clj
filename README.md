@@ -13,41 +13,19 @@ ariac provides capabilities beyond the Clojure bootstrap:
 - **Mandatory intent annotations** enforced by the checker
 - **Error positions** with line and column numbers
 
-#### Safety analyses
+## Download
 
-The checker performs comprehensive compile-time safety analysis without requiring ownership annotations or language extensions. All analyses run in ~40ms on the full ariac codebase (~4800 LOC, 6 modules).
+Pre-built uberjars are available from [GitHub Releases](https://github.com/jhavera/aria-clj/releases). Only Java 11+ is required:
 
-**Memory safety:**
-use-after-free (direct, via alias, via struct field, cross-function), double-free, null pointer dereference, free of non-pointer, memory leaks (function exit, pointer reassignment, loop body), pointer alias tracking, struct field dangling pointer tracking, cross-function free inference via multi-round analysis with transitive fixed-point propagation, cross-function conditional frees (may-be-freed state), global pointer state tracking across function boundaries, static bounds checking with constant propagation, capacity propagation through derived pointers, loop bound vs array capacity analysis with nested offset detection, uninitialized memory read detection, alloc size overflow warning.
-
-**Type safety:**
-binary/unary operand type mismatch (integer vs float, skips pointer arithmetic), comparison suffix mismatch, store value type mismatch, store/load suffix vs pointer element type, call argument type and count mismatch, return value type mismatch, let initializer type mismatch, set assignment type mismatch, store-field value type vs field type, alloc element type vs pointer type, unsafe integer-to-pointer and pointer-to-integer cast detection.
-
-**Control flow and validation:**
-dead code after return, dead code after branch, dead code after if where both branches return, missing return path in non-void functions, infinite loop detection (no conditional exit), constant integer overflow detection (add/mul), format string argument count and type validation, print without format string, division by literal zero, remainder by literal zero, shift by excessive or negative amount, uninitialized scalar variables, effect verification (pure with side effects, undeclared effects), immutability enforcement, undefined variable detection, mandatory intent annotations, global initializer type validation.
-
-**Design limits:**
-dynamic bounds checking with fully runtime indices (partially covered via loop bound analysis and constant propagation when bounds are compile-time resolvable), general integer overflow detection with non-constant operands (requires range analysis / abstract interpretation — constant overflow IS detected).
-
-#### Safety by design: ARIA-IR vs C
-
-ARIA-IR compiles to C99 and matches its computational power, but several C constructs are intentionally absent — eliminating entire vulnerability classes by construction rather than by checking:
-
-| C construct | ARIA-IR | Why excluded |
-|---|---|---|
-| `union` | Not available | Eliminates type confusion (CWE-843). Type punning done via explicit casts instead. |
-| `void*` | Not available | All pointers are typed (`(ptr i32)`, `(ptr $Node)`). Eliminates unsafe generic pointer patterns. |
-| Stack arrays | `(local-array $buf T N)` | Available with safety enforced: cannot free (ERROR), cannot return (ERROR), cannot store in global (ERROR). Safer than heap — no leaks, automatic cleanup, zero-cost allocation. |
-| `goto` | Not available | Structured control flow only (`if`/`loop`/`br`). Eliminates spaghetti control flow. |
-| Variadic functions | Not available | `print` is a built-in; user-defined variadics would undermine type safety. |
-| Threads / pthreads | Not available | Single-threaded execution. Eliminates data races, deadlocks, and TOCTOU vulnerabilities. |
-| Function pointers | Not yet available | Typed function references are a planned future addition. |
+```bash
+java -jar aria-clj-0.1.0.jar <file.aria> --check
+```
 
 ## Prerequisites
 
-- **Clojure 1.12+** (with `clojure` CLI / deps.edn)
+- **Clojure 1.12+** (with `clojure` CLI / deps.edn) — for development
 - **Java 11+**
-- **gcc** (for compiling generated C)
+- **gcc** (optional — required only for the C backend's `--run` flag)
 
 ## Quick start
 
@@ -69,6 +47,17 @@ clojure -M:run <file.aria> --check      # Type-check only
 clojure -M:run <file.aria> --run        # Compile with gcc and execute
 clojure -M:run <file.aria> -o out.c     # Write C to a file
 ```
+
+## JVM backend
+
+ARIA programs can also be compiled to JVM bytecode:
+
+```bash
+clojure -M:run <file.aria> --backend jvm       # Emit .class file
+clojure -M:run <file.aria> --emit-jar           # Emit runnable JAR
+```
+
+The generated JAR can be executed directly with `java -jar`.
 
 ## ARIA language overview
 
@@ -323,4 +312,4 @@ The bootstrap compiler (`aria-src/ariac-bootstrap.aria`) is a frozen single-file
 
 ## License
 
-MIT
+Apache-2.0
