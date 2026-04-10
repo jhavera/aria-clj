@@ -1,0 +1,10 @@
+;; Test: shift by >= 32 bits (undefined behavior)
+;; Expected: WARN — shift amount >= 32 (undefined behavior)
+
+(module "test_shift_overflow"
+  (func $main
+    (result i32) (effects io)
+    (intent "Shift by 32 bits — UB in C")
+    (let %x i32 (shl.i32 1 32))
+    (print "x = %d\n" %x)
+    (return 0)))

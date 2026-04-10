@@ -1,0 +1,17 @@
+;; Test: return value type mismatch
+;; Expected: WARN — return value type mismatch
+
+(module "test_return_type_mismatch"
+  (func $bad
+    (result i32)
+    (effects pure)
+    (intent "Return float from integer-returning function")
+    ;; Declared result i32, but returning f64
+    (return 3.14))
+
+  (func $main
+    (result i32)
+    (effects io)
+    (intent "Trigger return type mismatch")
+    (print "val = %d\n" (call $bad))
+    (return 0)))

@@ -1,0 +1,11 @@
+;; Test: uninitialized scalar variable
+;; Expected: WARN — uninitialized scalar variable '$x'
+
+(module "test_uninit_scalar"
+  (func $main
+    (result i32)
+    (effects io)
+    (intent "Use a mutable scalar variable declared without initializer")
+    (local mut $x i32)
+    (print "x = %d\n" $x)
+    (return 0)))

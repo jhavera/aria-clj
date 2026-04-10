@@ -132,3 +132,34 @@ the offset are compile-time constants.
 | File | Expected diagnostic | Description |
 |------|-------------------|-------------|
 | `test_global_use_after_free.aria` | `ERROR: use of freed global pointer` | Function A allocates global, function B frees it, function C uses it — cross-function global use-after-free |
+
+### Loop bound vs array capacity analysis
+
+| File | Expected diagnostic | Description |
+|------|-------------------|-------------|
+| `test_loop_oob.aria` | `ERROR: loop may access out-of-bounds on` | Loop bound (10) exceeds array capacity (8) — detects over-iteration |
+| `test_loop_oob_offset.aria` | `ERROR: loop may access out-of-bounds on` | Loop accesses `arr[j]` and `arr[j+1]` with bound equal to capacity — the +1 offset causes OOB |
+| `test_loop_safe.aria` | No errors, no warnings | Loop bound equals capacity with simple indexing — verifies absence of false positives |
+
+### Type safety (category-based validation)
+
+| File | Expected diagnostic | Description |
+|------|-------------------|-------------|
+| `test_binop_type_mismatch.aria` | `WARN: binary operand type mismatch` | Mixes i32 and f64 operands in `add.i32` |
+| `test_store_type_mismatch.aria` | `WARN: store value type mismatch` | Stores f64 literal via `store.i32` |
+| `test_call_arg_mismatch.aria` | `WARN: argument type mismatch in call to` | Passes f64 to i32 parameter |
+| `test_return_type_mismatch.aria` | `WARN: return value type mismatch` | Returns f64 from function declaring `(result i32)` |
+| `test_type_safe.aria` | No errors, no warnings | Pointer arithmetic, bool as integer, valid mixing — no false positives |
+
+### Dead code detection
+
+| File | Expected diagnostic | Description |
+|------|-------------------|-------------|
+| `test_dead_code.aria` | `WARN: dead code after return statement` | Code after `(return 0)` in function body |
+| `test_dead_code_branch_safe.aria` | No errors, no warnings | Return inside if-then branch, code after if — NOT dead |
+
+### Uninitialized scalar variables
+
+| File | Expected diagnostic | Description |
+|------|-------------------|-------------|
+| `test_uninit_scalar.aria` | `WARN: uninitialized scalar variable` | `(local mut $x i32)` without initializer |

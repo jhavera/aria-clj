@@ -1,0 +1,20 @@
+;; Test: function argument type mismatch
+;; Expected: WARN — argument type mismatch in call to '$add_ints'
+
+(module "test_call_arg_mismatch"
+  (func $add_ints
+    (param $a i32)
+    (param $b i32)
+    (result i32)
+    (effects pure)
+    (intent "Add two integers")
+    (return (add.i32 $a $b)))
+
+  (func $main
+    (result i32)
+    (effects io)
+    (intent "Pass float argument to integer parameter")
+    ;; $add_ints expects i32, but 3.14 is f64
+    (let %r i32 (call $add_ints 1 3.14))
+    (print "r = %d\n" %r)
+    (return 0)))

@@ -1,0 +1,11 @@
+;; Test: per-element mutable stack array — no false positives
+;; Expected: OK — no errors, no warnings
+
+(module "test_stack_perelement"
+  (func $main
+    (result i32) (effects io mem div)
+    (intent "Create mutable per-element array, modify and read")
+    (local-array $vals i32 10 20 30 40)
+    (store.i32 (add.i32 $vals 0) 99)
+    (print "vals: %d %d %d %d\n" (load.i32 (add.i32 $vals 0)) (load.i32 (add.i32 $vals 1)) (load.i32 (add.i32 $vals 2)) (load.i32 (add.i32 $vals 3)))
+    (return 0)))

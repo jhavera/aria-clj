@@ -1,0 +1,14 @@
+;; Test: store-field value type mismatch via type name resolution
+;; Expected: WARN — store-field value type mismatch for field 'tag'
+
+(module "test_store_field_type"
+  (type $Node (struct
+    (field $tag i32)
+    (field $value f64)))
+  (func $main
+    (result i32) (effects io mem)
+    (intent "Store float into integer field")
+    (let %n (ptr $Node) (alloc $Node 1))
+    (store.field %n "tag" 3.14)
+    (free %n)
+    (return 0)))

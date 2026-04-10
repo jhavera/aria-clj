@@ -1,0 +1,22 @@
+;; Test: return inside if-branch is NOT dead code for code after the if
+;; Expected: OK — no errors, no warnings
+
+(module "test_dead_code_branch_safe"
+  (func $abs
+    (param $x i32)
+    (result i32)
+    (effects pure)
+    (intent "Return absolute value using early return in branch")
+    (if (lt.i32 $x 0)
+      (then (return (sub.i32 0 $x)))
+      (else))
+    ;; This is NOT dead code — only the then-branch returns
+    (return $x))
+
+  (func $main
+    (result i32)
+    (effects io)
+    (intent "Test that return in if-branch does not flag subsequent code as dead")
+    (print "abs(-5) = %d\n" (call $abs -5))
+    (print "abs(3) = %d\n" (call $abs 3))
+    (return 0)))

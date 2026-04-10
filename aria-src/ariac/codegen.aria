@@ -344,6 +344,50 @@
         (return))
       (else))
 
+    ;; 35: local-array
+    (if (eq.i32 %tag 35)
+      (then
+        (if (eq.i32 (load.field %n "bool1") 0)
+          (then
+            ;; Fill mode: Type name[count]; for(...) name[i] = init;
+            (call $cg_emit_indent)
+            (call $cg_emit_type (load.field %n "type1"))
+            (print " ")
+            (call $cg_emit_name (load.field %n "str1"))
+            (print "[")
+            (call $cg_emit_expr (load.field %n "left"))
+            (print "];\n")
+            (call $cg_emit_indent)
+            (print "for (int32_t _la_i = 0; _la_i < ")
+            (call $cg_emit_expr (load.field %n "left"))
+            (print "; _la_i++) ")
+            (call $cg_emit_name (load.field %n "str1"))
+            (print "[_la_i] = ")
+            (call $cg_emit_expr (load.field %n "right"))
+            (print ";\n"))
+          (else
+            ;; Per-element mode: [const] Type name[] = {v1, v2, ...};
+            (call $cg_emit_indent)
+            (if (eq.i32 (cast i64 i32 (load.field %n "int1")) 1)
+              (then (print "const "))
+              (else))
+            (call $cg_emit_type (load.field %n "type1"))
+            (print " ")
+            (call $cg_emit_name (load.field %n "str1"))
+            (print "[] = {")
+            (let %vc i32 (load.field %n "count"))
+            (let %va (ptr i32) (load.field %n "children"))
+            (local mut $vi i32 0)
+            (loop $emit_vals
+              (if (ge.i32 $vi %vc) (then (br $emit_vals))
+                (else
+                  (if (gt.i32 $vi 0) (then (print ", ")) (else))
+                  (call $cg_emit_expr (load.i32 (add.i32 %va $vi)))
+                  (set $vi (add.i32 $vi 1)))))
+            (print "};\n")))
+        (return))
+      (else))
+
     ;; 9: set-var
     (if (eq.i32 %tag 9)
       (then

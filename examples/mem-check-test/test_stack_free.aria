@@ -1,0 +1,11 @@
+;; Test: cannot free stack-allocated array
+;; Expected: ERROR — cannot free stack-allocated array '$buf'
+
+(module "test_stack_free"
+  (func $main
+    (result i32) (effects mem)
+    (intent "Attempt to free a stack array")
+    (local-array $buf i32 8 0)
+    (store.i32 $buf 42)
+    (free $buf)
+    (return 0)))

@@ -1,0 +1,12 @@
+;; Test: infinite loop with no conditional exit
+;; Expected: WARN — infinite loop with no exit and no function calls
+
+(module "test_infinite_loop"
+  (func $main
+    (result i32) (effects io div)
+    (intent "Loop with unconditional branch back — infinite")
+    (local mut $i i32 0)
+    (loop $inf
+      (set $i (add.i32 $i 1))
+      (print "looping %d\n" $i))
+    (return 0)))

@@ -1,0 +1,10 @@
+;; Test: alloc element type does not match pointer variable type
+;; Expected: WARN — alloc element type does not match pointer type of '%p'
+
+(module "test_alloc_type_mismatch"
+  (func $main
+    (result i32) (effects io mem)
+    (intent "Alloc f64 but store in ptr-to-i32 variable")
+    (let %p (ptr i32) (alloc f64 4))
+    (free %p)
+    (return 0)))

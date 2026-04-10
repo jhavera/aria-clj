@@ -1,0 +1,10 @@
+;; Test: alloc with negative count
+;; Expected: ERROR — alloc with negative count
+
+(module "test_alloc_negative"
+  (func $main
+    (result i32) (effects mem)
+    (intent "Allocate with negative count — wraps to huge size")
+    (let %p (ptr i32) (alloc i32 -1))
+    (free %p)
+    (return 0)))

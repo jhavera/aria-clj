@@ -1,0 +1,12 @@
+;; Test: out-of-bounds on stack array
+;; Expected: ERROR — out-of-bounds access on '$buf'
+
+(module "test_stack_bounds"
+  (func $main
+    (result i32) (effects mem)
+    (intent "Access past end of stack array")
+    (local-array $buf i32 4 0)
+    (store.i32 (add.i32 $buf 0) 1)
+    ;; Offset 5 >= capacity 4
+    (store.i32 (add.i32 $buf 5) 99)
+    (return 0)))

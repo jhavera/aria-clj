@@ -1,0 +1,32 @@
+;; Test: valid stack array usage — no false positives
+;; Expected: OK — no errors, no warnings
+
+(module "test_stack_safe"
+  (func $fill_and_sum
+    (param $n i32)
+    (result i32)
+    (effects mem div)
+    (intent "Use stack array within scope, pass to function, no leaks")
+    (local-array $buf i32 16 0)
+    (local mut $i i32 0)
+    (loop $fill
+      (if (ge.i32 $i $n)
+        (then (br $fill))
+        (else
+          (store.i32 (add.i32 $buf $i) (mul.i32 $i $i))
+          (set $i (add.i32 $i 1)))))
+    (local mut $sum i32 0)
+    (set $i 0)
+    (loop $add
+      (if (ge.i32 $i $n)
+        (then (br $add))
+        (else
+          (set $sum (add.i32 $sum (load.i32 (add.i32 $buf $i))))
+          (set $i (add.i32 $i 1)))))
+    (return $sum))
+  (func $main
+    (result i32) (effects io mem div)
+    (intent "Valid stack array usage")
+    (let %r i32 (call $fill_and_sum 4))
+    (print "sum = %d\n" %r)
+    (return 0)))

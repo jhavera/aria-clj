@@ -1,0 +1,12 @@
+;; Test: dead code after if where both branches return
+;; Expected: WARN — dead code after if where both branches return
+
+(module "test_dead_code_both_return"
+  (func $main
+    (param $x i32) (result i32) (effects io)
+    (intent "Both if branches return, then code follows")
+    (if (gt.i32 $x 0)
+      (then (return 1))
+      (else (return 0)))
+    (print "unreachable\n")
+    (return -1)))

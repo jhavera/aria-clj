@@ -1,0 +1,13 @@
+;; Test: load suffix vs pointer element type mismatch
+;; Expected: WARN — load suffix type does not match pointer element type
+
+(module "test_load_ptr_type"
+  (func $main
+    (result i32) (effects io mem)
+    (intent "Load i32 from a ptr-to-f64")
+    (let %p (ptr f64) (alloc f64 1))
+    (store.f64 %p 3.14)
+    (let %x i32 (load.i32 %p))
+    (print "x = %d\n" %x)
+    (free %p)
+    (return 0)))

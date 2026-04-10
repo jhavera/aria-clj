@@ -1,0 +1,39 @@
+;; Test: valid patterns that should NOT trigger type mismatch warnings
+;; Expected: OK — no errors, no warnings
+
+(module "test_type_safe"
+  (func $sum
+    (param $arr (ptr i32))
+    (param $len i32)
+    (result i32)
+    (effects mem div)
+    (intent "Sum array with pointer arithmetic and null comparison")
+    (local mut $i i32 0)
+    (local mut $total i32 0)
+    ;; Pointer arithmetic: (add.i32 %ptr %int) — valid, not a type mismatch
+    (loop $lp
+      (if (ge.i32 $i $len)
+        (then (br $lp))
+        (else
+          (set $total (add.i32 $total (load.i32 (add.i32 $arr $i))))
+          (set $i (add.i32 $i 1)))))
+    (return $total))
+
+  (func $main
+    (result i32)
+    (effects io mem div)
+    (intent "Test valid patterns: ptr arith, bool as int, i32 mixing")
+    (let %arr (ptr i32) (alloc i32 4))
+    (store.i32 (add.i32 %arr 0) 10)
+    (store.i32 (add.i32 %arr 1) 20)
+    (store.i32 (add.i32 %arr 2) 30)
+    (store.i32 (add.i32 %arr 3) 40)
+    (let %s i32 (call $sum %arr 4))
+    (print "sum = %d\n" %s)
+    ;; Bool used in integer context — valid (bool is integer category)
+    (local mut $flag bool true)
+    (if (eq.bool $flag true)
+      (then (print "flag is true\n"))
+      (else))
+    (free %arr)
+    (return 0)))

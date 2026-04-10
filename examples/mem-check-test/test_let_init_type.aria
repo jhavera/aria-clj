@@ -1,0 +1,10 @@
+;; Test: let initializer type mismatch
+;; Expected: WARN — initializer type mismatch for variable '%x'
+
+(module "test_let_init_type"
+  (func $main
+    (result i32) (effects io)
+    (intent "Initialize integer variable with float")
+    (let %x i32 3.14)
+    (print "x = %d\n" %x)
+    (return 0)))

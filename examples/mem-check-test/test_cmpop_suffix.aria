@@ -1,0 +1,13 @@
+;; Test: comparison operand type does not match suffix
+;; Expected: WARN — comparison operand type does not match suffix
+
+(module "test_cmpop_suffix"
+  (func $main
+    (result i32) (effects io)
+    (intent "Compare integers with float suffix")
+    (let %a i32 5)
+    (let %b i32 10)
+    (if (ge.f64 %a %b)
+      (then (print "a >= b\n"))
+      (else (print "a < b\n")))
+    (return 0)))

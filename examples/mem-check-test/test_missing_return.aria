@@ -1,0 +1,18 @@
+;; Test: non-void function may not return on all paths
+;; Expected: WARN — non-void function may not return on all paths
+
+(module "test_missing_return"
+  (func $maybe_return
+    (param $x i32)
+    (result i32)
+    (effects pure)
+    (intent "Only returns in one branch, falls through otherwise")
+    (if (gt.i32 $x 0)
+      (then (return $x))
+      (else)))
+
+  (func $main
+    (result i32) (effects io)
+    (intent "Trigger missing return path")
+    (print "val = %d\n" (call $maybe_return 5))
+    (return 0)))

@@ -1,0 +1,53 @@
+;; Local array demo — stack-allocated arrays with zero-cost allocation
+;; Explicit initialization required. No malloc, no free, no leaks.
+
+(module "local_array_demo"
+
+  (func $sum_squares
+    (param $n i32)
+    (result i32)
+    (effects io mem div)
+    (intent "Compute sum of squares 1..n using a stack-allocated buffer")
+
+    ;; Stack array: zero-cost allocation, explicitly initialized to 0
+    (local-array $buf i32 64 0)
+
+    ;; Fill buffer with squares
+    (local mut $i i32 0)
+    (loop $fill
+      (if (ge.i32 $i $n)
+        (then (br $fill))
+        (else
+          (store.i32 (add.i32 $buf $i) (mul.i32 (add.i32 $i 1) (add.i32 $i 1)))
+          (set $i (add.i32 $i 1)))))
+
+    ;; Sum the buffer
+    (local mut $total i32 0)
+    (set $i 0)
+    (loop $sum
+      (if (ge.i32 $i $n)
+        (then (br $sum))
+        (else
+          (set $total (add.i32 $total (load.i32 (add.i32 $buf $i))))
+          (set $i (add.i32 $i 1)))))
+
+    (return $total))
+
+  (func $main
+    (result i32)
+    (effects io mem div)
+    (intent "Demonstrate stack-allocated arrays")
+
+    (print "Sum of squares 1..10: %d\n" (call $sum_squares 10))
+    (print "Sum of squares 1..5:  %d\n" (call $sum_squares 5))
+
+    ;; Stack array for string buffer, initialized to 0
+    (local-array $msg u8 32 0)
+    (store.u8 (add.i32 $msg 0) 72)
+    (store.u8 (add.i32 $msg 1) 105)
+    (store.u8 (add.i32 $msg 2) 0)
+    (print "Message: %s\n" $msg)
+
+    (return 0))
+
+  (export $main))

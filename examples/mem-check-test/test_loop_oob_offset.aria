@@ -1,0 +1,19 @@
+;; Test: loop with nested offset exceeds capacity
+;; Expected: ERROR — loop may access out-of-bounds on '%arr'
+
+(module "test_loop_oob_offset"
+  (func $main
+    (result i32)
+    (effects io mem div)
+    (intent "Loop accesses arr[i] and arr[i+1] but bound equals capacity")
+    (let %arr (ptr i32) (alloc i32 8))
+    (local mut $j i32 0)
+    (loop $scan
+      (if (ge.i32 $j 8) (then (br $scan))
+        (else
+          ;; arr[j] is fine (0..7), but arr[j+1] reaches index 8 → OOB
+          (let %curr i32 (load.i32 (add.i32 %arr $j)))
+          (let %next i32 (load.i32 (add.i32 %arr (add.i32 $j 1))))
+          (set $j (add.i32 $j 1)))))
+    (free %arr)
+    (return 0)))

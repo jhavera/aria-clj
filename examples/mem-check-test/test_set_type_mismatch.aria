@@ -1,0 +1,11 @@
+;; Test: assignment type mismatch
+;; Expected: WARN — assignment type mismatch for variable '$x'
+
+(module "test_set_type_mismatch"
+  (func $main
+    (result i32) (effects io)
+    (intent "Assign float to integer variable")
+    (local mut $x i32 0)
+    (set $x 3.14)
+    (print "x = %d\n" $x)
+    (return 0)))
